@@ -1,8 +1,6 @@
 # Stationly Syncer
 
-A high-performance Spring Boot background worker that synchronizes real-time public transit data from Transport for London (TfL) and broadcasts it directly to mobile clients using Firebase Cloud Messaging (FCM) and Cloud Firestore. 
-
-*Note: This repository was formerly known as `StationlyBE` before it was refactored from a REST API into a pure background synchronization worker.*
+A high-performance Spring Boot background worker that synchronizes real-time public transit data from Transport for London (TfL) and broadcasts it directly to mobile clients using Firebase Cloud Messaging (FCM) and Cloud Firestore.
 
 ---
 
