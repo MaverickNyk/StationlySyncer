@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 @Component
-public class TflApiClient {
+public class TflApiClient implements TflApi {
 
         private final WebClient webClient;
         private final TflRateLimiter rateLimiter;
@@ -32,18 +32,7 @@ public class TflApiClient {
                                 .build();
         }
 
-        public List<ArrivalPrediction> getArrivals(String stationId) {
-                return webClient.get()
-                                .uri(uriBuilder -> uriBuilder
-                                                .path("/StopPoint/{stationId}/Arrivals")
-                                                .queryParam("app_key", appKey)
-                                                .build(stationId))
-                                .retrieve()
-                                .bodyToFlux(ArrivalPrediction.class)
-                                .timeout(java.time.Duration.ofSeconds(apiTimeout))
-                                .collectList()
-                                .block();
-        }
+
 
         public List<ArrivalPrediction> getArrivalsByMode(String mode) {
                 return webClient.get()
@@ -59,20 +48,7 @@ public class TflApiClient {
                                 .block();
         }
 
-        public List<Map<String, Object>> getTransportModes() {
-                rateLimiter.acquire();
-                return webClient.get()
-                                .uri(uriBuilder -> uriBuilder
-                                                .path("/Journey/Meta/Modes")
-                                                .queryParam("app_key", appKey)
-                                                .build())
-                                .retrieve()
-                                .bodyToMono(
-                                                new org.springframework.core.ParameterizedTypeReference<List<Map<String, Object>>>() {
-                                                })
-                                .timeout(java.time.Duration.ofSeconds(apiTimeout))
-                                .block();
-        }
+
 
         public List<Map<String, Object>> getLinesByMode(String mode) {
                 rateLimiter.acquire();

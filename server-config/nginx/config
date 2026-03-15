@@ -4,7 +4,7 @@ server {
 
     # 1. Straight to Docs: http: //api.stationly.co.uk -> https://.../docs
     location = / {
-    return 301 https: //api.stationly.co.uk/StationlyBE/docs;
+    return 301 https: //api.stationly.co.uk/StationlySyncer/docs;
     }
 
     # 2. Upgrade everything else: http: //api.stationly.co.uk/path -> https://api.stationly.co.uk/path
@@ -19,7 +19,7 @@ server {
 
     # 3. Root redirect for HTTPS
     location = / {
-        return 301 https: //api.stationly.co.uk/StationlyBE/docs;
+        return 301 https: //api.stationly.co.uk/StationlySyncer/docs;
     }
 
     # 4. Standard Proxy for API and Docs Assets

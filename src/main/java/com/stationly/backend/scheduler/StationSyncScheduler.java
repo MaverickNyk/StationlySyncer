@@ -12,8 +12,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
 import java.util.List;
-
-import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 @Component
@@ -44,16 +42,16 @@ public class StationSyncScheduler {
                 .collect(Collectors.toList());
 
         log.info("📅 Syncing all configured modes: {}", allModes);
-        performSync(allModes, lineId -> true);
+        performSync(allModes);
     }
 
-    private void performSync(List<String> modes, Predicate<String> lineFilter) {
+    private void performSync(List<String> modes) {
         long startTime = System.currentTimeMillis();
 
         try {
             for (String mode : modes) {
                 // Delegate to StationService for optimized, batched processing per mode
-                stationService.syncStationsByMode(mode, lineFilter);
+                stationService.syncStationsByMode(mode);
             }
 
             long duration = System.currentTimeMillis() - startTime;

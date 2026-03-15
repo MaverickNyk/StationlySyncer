@@ -19,92 +19,49 @@ public class StationService {
     private final TflApiClient tflApiClient;
     private final DataRepository<Station, String> stationRepository;
 
-    /**
-     * Search stations based on search keys.
-     * Keys can be: mode, lineId, mode_lineId, lineId_direction,
-     * mode_lineId_direction
-     */
-    public List<Station> searchStations(String searchKey) {
-        List<Station> results = stationRepository.findByArrayContains("searchKeys", searchKey);
-        log.info("🔍 Search stations with searchKey '{}': found {}", searchKey, results.size());
-        return results;
-    }
-
-    public List<Station> getStationsByLine(String lineId) {
-        return searchStations(lineId);
-    }
-
-    /**
-     * /**
-     * Search stations within a given radius (km) of a location.
-     */
-    public List<Station> searchByLocation(double lat, double lon, double radiusKm) {
-        List<Station> allStations = stationRepository.findAll();
-        return allStations.stream()
-                .filter(station -> calculateDistanceInKm(lat, lon, station.getLat(), station.getLon()) <= radiusKm)
-                .collect(Collectors.toList());
-    }
-
-    private double calculateDistanceInKm(double lat1, double lon1, double lat2, double lon2) {
-        // Haversine formula
-        int R = 6371; // Radius of the earth in km
-        double dLat = Math.toRadians(lat2 - lat1);
-        double dLon = Math.toRadians(lon2 - lon1);
-        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
-                        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c;
-    }
-
     public void syncStationsByMode(String modeName) {
-        syncStationsByMode(modeName, lineId -> true);
+        syncStationsByMode(modeName, null);
     }
 
-    public void syncStationsByMode(String modeName, java.util.function.Predicate<String> lineFilter) {
-        log.info("🚀 Starting batch sync for mode: {}", modeName);
+    /**
+      * Sync stations for a specific mode (and optionally line) from TfL API
+      * and update Firestore with any changes.
+      */
+    public void syncStationsByMode(String modeName, String lineId) {
+        log.info("╔═══════════════════════════════════════════════════════════════════");
+        log.info("║ 🚀 STATION SYNC STARTED | Mode: {} | Line: {}", modeName, lineId != null ? lineId : "ALL");
+        log.info("╚═══════════════════════════════════════════════════════════════════");
 
-        // 1. Fetch EVERYTHING from DB once.
-        log.info("📥 Fetching existing stations from Firestore...");
-        Map<String, Station> existingStations = getSavedStations();
-        log.info("✅ Loaded {} existing stations.", existingStations.size());
+        // 1. Fetch stations intelligently to avoid full DB scan
+        log.info("📥 [{}] Step 1: Fetching existing stations from Firestore...", modeName);
+        Map<String, Station> existingStations = getSavedStations(modeName, lineId);
+        log.info("✅ [{}] Step 1: Loaded {} existing stations", modeName, existingStations.size());
 
         // 2. Fetch lines to process
+        log.info("📋 [{}] Step 2: Fetching lines to process...", modeName);
         List<Map<String, Object>> lines = tflApiClient.getLinesByMode(modeName);
         if (lines == null || lines.isEmpty()) {
-            log.warn("⚠️ No lines found for mode: {}", modeName);
+            log.warn("⚠️ [{}] No lines found for mode", modeName);
             return;
         }
+        log.info("✅ [{}] Step 2: Found {} lines to process", modeName, lines.size());
 
         // 3. Process lines in parallel to build "Fresh" state in-memory
+        log.info("🔄 [{}] Step 3: Processing lines in parallel...", modeName);
         Map<String, Station> freshStationsMap = new java.util.concurrent.ConcurrentHashMap<>();
-        // Pre-populate with existing so we merge INTO them (preserving other modes'
-        // data)
-        // Actually, better strategy:
-        // We want to update existing stations with new data for THIS mode.
-        // So we can clone existing map or just work on a fresh map and then merge.
-        // Working on a fresh map is safer for partial failures.
-        // But we need existing data to preserve OTHER modes.
-        // Let's use a concurrent map that starts as a copy of existing, BUT deep copy
-        // is hard.
-        // Alternative: Process fresh data into a "Fresh Changes" map.
-        // Then iterate Fresh Changes, merge with Existing to see if anything ACTUALLY
-        // changed.
-
-        // Rate limited to ~5 req/sec globally, so no need for many threads. 5 is ample.
         java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(5);
         List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
 
         for (Map<String, Object> line : lines) {
-            String lineId = (String) line.get("id");
-            if (!lineFilter.test(lineId))
+            String currentLineId = (String) line.get("id");
+            if (lineId != null && !lineId.equals(currentLineId))
                 continue;
 
             futures.add(executor.submit(() -> {
                 try {
-                    processLineForBatch(lineId, modeName, freshStationsMap, existingStations); // Process into fresh map
+                    processLineForBatch(currentLineId, modeName, freshStationsMap, existingStations);
                 } catch (Exception e) {
-                    log.error("❌ Failed to process line {}: {}", lineId, e.getMessage());
+                    log.error("❌ [{}] Failed to process line {}: {}", modeName, currentLineId, e.getMessage());
                 }
             }));
         }
@@ -114,13 +71,14 @@ public class StationService {
             try {
                 f.get();
             } catch (Exception e) {
-                log.error("❌ Error waiting for future", e);
+                log.error("❌ [{}] Error waiting for future: {}", modeName, e.getMessage());
             }
         }
         executor.shutdown();
+        log.info("✅ [{}] Step 3: Processed {} lines", modeName, lines.size());
 
         // 4. Diff and Identify Changed Stations
-        log.info("🔄 Validating changes against existing DB...");
+        log.info("🔍 [{}] Step 4: Validating changes against existing DB...", modeName);
         List<Station> changedStations = new ArrayList<>();
         int totalProcessed = freshStationsMap.size();
 
@@ -133,13 +91,16 @@ public class StationService {
 
         // 5. Save only changed stations
         if (!changedStations.isEmpty()) {
-            log.info("💾 Found {} changed/new stations. Saving in batches...", changedStations.size());
+            log.info("💾 [{}] Step 5: Saving {} changed/new stations in batches...", modeName, changedStations.size());
             saveInBatches(changedStations, modeName);
         } else {
-            log.info("🎉 No changes detected for mode: {}. All up to date.", modeName);
+            log.info("🎉 [{}] Step 5: No changes detected. All stations up to date", modeName);
         }
 
-        log.info("✅ Sync completed for mode: {}. Processed {} unique stations.", modeName, totalProcessed);
+        log.info("╔═══════════════════════════════════════════════════════════════════");
+        log.info("║ ✅ [{}] SYNC COMPLETED | Processed: {} stations | Changed: {}",
+                        modeName, totalProcessed, changedStations.size());
+        log.info("╚═══════════════════════════════════════════════════════════════════");
     }
 
     private void saveInBatches(List<Station> stations, String modeName) {
@@ -201,7 +162,7 @@ public class StationService {
         Map<String, Station> stationsToSave = new HashMap<>(); // Fresh map for single line
         // We need existing stations to do a proper merge even for single line to avoid
         // overwriting other modes
-        Map<String, Station> existingStations = getSavedStations();
+        Map<String, Station> existingStations = getSavedStations(null, lineId);
 
         try {
             processLineForBatch(lineId, modeName, stationsToSave, existingStations);
@@ -393,12 +354,31 @@ public class StationService {
         generateSearchKeys(station);
     }
 
-    private Map<String, Station> getSavedStations() {
-        // 1. Get everything once (1 network call)
-        List<Station> allStations = stationRepository.findAll();
-        Map<String, Station> stationMap = allStations.stream()
-                .collect(Collectors.toMap(Station::getNaptanId, s -> s));
-        return stationMap;
+    private Map<String, Station> getSavedStations(String modeName, String lineId) {
+        List<Station> stations;
+
+        if (lineId != null) {
+            // If we are syncing a specific line, just get stations for that line
+            log.info("🔎 Fetching stations for lineId: {}", lineId);
+            stations = stationRepository.findByArrayContains("searchKeys", lineId);
+        } else if ("bus".equalsIgnoreCase(modeName) || "tram".equalsIgnoreCase(modeName)) {
+            // For bus/tram, fetching ALL is too heavy (20k+). Fetch only for this mode.
+            // Risk: If a station gains 'bus' mode on a separate sync, we might miss it here
+            // if we don't have it.
+            // But typical overlap for bus is low/manageable or they are already distinct
+            // stops.
+            log.info("🔎 Fetching stations for mode: {} (Optimized fetch)", modeName);
+            stations = stationRepository.findByArrayContains("searchKeys", modeName);
+        } else {
+            // For Tube/DLR/Rail, we want to fetch EVERYTHING EXCEPT buses to ensure we
+            // don't duplicate/overwrite
+            // multi-mode stations (e.g. Waterloo) while still avoiding the 20k bus payload.
+            log.info("🔎 Fetching all stations EXCEPT buses (Safe fetch for {})", modeName);
+            stations = stationRepository.findAllExcept("stopType", "NaptanPublicBusCoachTram");
+        }
+
+        return stations.stream()
+                .collect(Collectors.toMap(Station::getNaptanId, s -> s, (s1, s2) -> s1));
     }
 
     private void generateSearchKeys(Station station) {

@@ -10,7 +10,7 @@ import org.springframework.context.annotation.Configuration;
 
 import java.util.List;
 
-@Configuration
+// @Configuration
 public class OpenApiConfig {
 
         @Bean
@@ -46,9 +46,9 @@ public class OpenApiConfig {
                                                                 .name("Apache 2.0")
                                                                 .url("http://springdoc.org")))
                                 .servers(List.of(
-                                                new Server().url("https://api.stationly.co.uk/StationlyBE")
+                                                new Server().url("https://api.stationly.co.uk/StationlySyncer")
                                                                 .description("Production Server (HTTPS)"),
-                                                new Server().url("http://localhost:8080/StationlyBE")
+                                                new Server().url("http://localhost:8080/StationlySyncer")
                                                                 .description("Local Development (HTTP)")));
         }
 }

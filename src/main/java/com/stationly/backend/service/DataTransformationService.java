@@ -26,14 +26,15 @@ public class DataTransformationService {
     }
 
     /**
-     * Transform TfL arrivals into grouped Station objects
-     * Key pattern: "Station_<stationId>"
-     * 
-     * @param arrivals Raw TfL arrival predictions
-     * @return Map with key pattern "Station_<stationId>" and StationPredictions as
-     *         value
-     */
+      * Transform TfL arrivals into grouped Station objects
+      * Key pattern: "Station_<stationId>"
+      *
+      * @param arrivals Raw TfL arrival predictions
+      * @return Map with key pattern "Station_<stationId>" and StationPredictions as
+      *         value
+      */
     public Map<String, StationPredictions> transformToStationGroups(List<ArrivalPrediction> arrivals) {
+        log.info("🔄 [TRANSFORM] Starting transformation of {} arrivals", arrivals.size());
         Map<String, StationPredictions> stationGroups = new java.util.concurrent.ConcurrentHashMap<>();
         String now = LocalDateTime.now().format(DateTimeFormatter.ISO_DATE_TIME);
 
@@ -41,6 +42,8 @@ public class DataTransformationService {
         Map<String, List<ArrivalPrediction>> byStation = arrivals.stream()
                 .filter(a -> a.getNaptanId() != null)
                 .collect(Collectors.groupingBy(ArrivalPrediction::getNaptanId));
+
+        log.info("🔄 [TRANSFORM] Grouped into {} stations", byStation.size());
 
         // Process each station sequentially to avoid thread exhaustion
         byStation.entrySet().forEach(entry -> {
@@ -94,7 +97,7 @@ public class DataTransformationService {
             stationGroups.put(stationKey, station);
         });
 
-        log.debug("Transformed {} arrivals into {} station groups", arrivals.size(), stationGroups.size());
+        log.info("✅ [TRANSFORM] Completed: {} arrivals → {} station groups", arrivals.size(), stationGroups.size());
         return stationGroups;
     }
 
@@ -160,16 +163,48 @@ public class DataTransformationService {
         if (rawName != null) {
             rawName = rawName.replace(" Underground Station", "")
                     .replace(" Station", "")
+                    .replace(" DLR", "")
                     .trim();
         }
 
         return PredictionItem.builder()
                 .destinationNaptanId(arrival.getDestinationNaptanId())
-                .platformName(arrival.getPlatformName())
+                .platformName(getPresentablePlatform(arrival.getModeName(), arrival.getPlatformName()))
                 .expectedArrival(arrival.getExpectedArrival() != null
                         ? arrival.getExpectedArrival().format(DateTimeFormatter.ISO_INSTANT)
                         : null)
                 .displayName(rawName)
                 .build();
+    }
+
+    public String getPresentablePlatform(String mode, String rawPlatform) {
+        // 1. Handle Null or Missing Data
+        if (rawPlatform == null || rawPlatform.equalsIgnoreCase("null") || rawPlatform.trim().isEmpty()) {
+            return "bus".equalsIgnoreCase(mode) ? "No Stop assigned" : "No Platform assigned";
+        }
+
+        rawPlatform = rawPlatform.trim();
+
+        // 2. Format Tube/Train descriptive strings (e.g., "Westbound - Platform 2")
+        if (rawPlatform.contains(" - ")) {
+            String[] parts = rawPlatform.split(" - ");
+            if (parts.length == 2) {
+                // Re-orders to "Platform 2 (Westbound)"
+                return parts[1] + " (" + parts[0] + ")";
+            }
+        }
+
+        // 3. Format Bus Stop letters (e.g., "BP" -> "Stop BP")
+        if ("bus".equalsIgnoreCase(mode)) {
+            return "Stop " + rawPlatform.toUpperCase();
+        }
+
+        // 4. Format Numeric platforms (e.g., "1" -> "Platform 1")
+        if (rawPlatform.matches("\\d+")) {
+            return "Platform " + rawPlatform;
+        }
+
+        // Fallback for anything already formatted
+        return rawPlatform;
     }
 }

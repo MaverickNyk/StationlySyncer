@@ -140,6 +140,24 @@ public class GenericFirestoreRepository<T, ID> implements DataRepository<T, ID> 
     }
 
     @Override
+    public List<T> findAllExcept(String fieldName, Object valueToExclude) {
+        if (firestore == null)
+            return new ArrayList<>();
+        List<T> results = new ArrayList<>();
+        try {
+            ApiFuture<QuerySnapshot> future = firestore.collection(collectionName)
+                    .whereNotEqualTo(fieldName, valueToExclude)
+                    .get();
+            for (QueryDocumentSnapshot doc : future.get().getDocuments()) {
+                results.add(doc.toObject(entityClass));
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            log.error("Failed to find all except {} in {}", fieldName, collectionName, e);
+        }
+        return results;
+    }
+
+    @Override
     public void deleteAll() {
         if (firestore == null)
             return;

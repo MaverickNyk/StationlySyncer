@@ -12,6 +12,7 @@ import lombok.NoArgsConstructor;
 public class LineStatusResponse {
     private String id;
     private String name;
+    private String mode;
     private String statusSeverityDescription;
     private String reason;
     private String lastUpdatedTime;

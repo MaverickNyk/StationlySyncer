@@ -1,5 +1,6 @@
 package com.stationly.backend.model;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -14,7 +15,8 @@ public class PredictionItem {
     @JsonProperty("destId")
     private String destinationNaptanId;
 
-    @JsonProperty("id")
+    @JsonProperty("platform")
+    @JsonAlias("platformName")
     private String platformName;
 
     @JsonProperty("eta")

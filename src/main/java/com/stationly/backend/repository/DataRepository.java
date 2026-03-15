@@ -43,6 +43,11 @@ public interface DataRepository<T, ID> {
     List<T> findAll();
 
     /**
+     * Find all entities except those where the field matches the value.
+     */
+    List<T> findAllExcept(String fieldName, Object valueToExclude);
+
+    /**
      * Delete all entities.
      */
     void deleteAll();

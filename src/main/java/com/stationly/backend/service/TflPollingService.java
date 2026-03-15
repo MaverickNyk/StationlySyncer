@@ -36,21 +36,22 @@ public class TflPollingService {
 
         /**
          * Refresh all configured transport modes
-         * 
+         *
          * @return List of summaries for each mode
          */
         public List<RefreshSummary> refreshAll() {
                 String timestamp = LocalDateTime.now().format(TIME_FORMATTER);
                 long startMillis = System.currentTimeMillis();
 
-                log.info("═══════════════════════════════════════════════════════════════════");
-                log.info("🚇 TFL REFRESH STARTED | Modes: {} | Time: {}", tflTransportModes.toUpperCase(), timestamp);
-                log.info("═══════════════════════════════════════════════════════════════════");
+                log.info("╔═══════════════════════════════════════════════════════════════════");
+                log.info("║ 🚇 TFL REFRESH STARTED | Modes: {} | Time: {}", tflTransportModes.toUpperCase(), timestamp);
+                log.info("╚═══════════════════════════════════════════════════════════════════");
 
                 String[] modes = tflTransportModes.split(",");
                 var executor = java.util.concurrent.Executors.newFixedThreadPool(modes.length + 2);
                 try {
                         // Process all modes in parallel
+                        log.info("📋 Processing {} modes in parallel: {}", modes.length, Arrays.toString(modes));
                         List<CompletableFuture<RefreshSummary>> futures = Arrays.stream(modes)
                                         .map(String::trim)
                                         .filter(mode -> !mode.isEmpty())
@@ -64,9 +65,18 @@ public class TflPollingService {
 
                         long totalDuration = System.currentTimeMillis() - startMillis;
                         monitoringService.recordPollingDuration("total", totalDuration, "SUCCESS");
-                        log.info("═══════════════════════════════════════════════════════════════════");
-                        log.info("🚇 TFL REFRESH ENDED | Total Time: {}ms", totalDuration);
-                        log.info("═══════════════════════════════════════════════════════════════════");
+                        log.info("╔═══════════════════════════════════════════════════════════════════");
+                        log.info("║ ✅ TFL REFRESH COMPLETED | Total Time: {}ms | Modes Processed: {}", totalDuration, summaries.size());
+                        log.info("╚═══════════════════════════════════════════════════════════════════");
+                        
+                        // Log summary for each mode
+                        for (RefreshSummary summary : summaries) {
+                                log.info("   📊 Mode: {} | Status: {} | Arrivals: {} | FCM: {} | Time: {}ms",
+                                                summary.getMode(), summary.getStatus(),
+                                                summary.getArrivalsReceived(), summary.getFcmTopicsPublished(),
+                                                summary.getProcessingTimeMs());
+                        }
+                        
                         return summaries;
                 } finally {
                         executor.shutdown();
@@ -74,30 +84,28 @@ public class TflPollingService {
         }
 
         /**
-         * Manually refresh data for a specific mode
-         * 
-         * @param mode Transport mode (tube, dlr, bus, etc.)
-         * @return Summary of the refresh operation
-         */
+          * Manually refresh data for a specific mode
+          *
+          * @param mode Transport mode (tube, dlr, bus, etc.)
+          * @return Summary of the refresh operation
+          */
         public RefreshSummary refreshMode(String mode) {
                 String timestamp = LocalDateTime.now().format(TIME_FORMATTER);
                 LocalDateTime startTime = LocalDateTime.now();
                 long startMillis = System.currentTimeMillis();
 
-                log.info("───────────────────────────────────────────────────────────────────");
-                log.info("🚇 POLLING MODE: {} | Time: {}", mode.toUpperCase(), timestamp);
-                log.info("───────────────────────────────────────────────────────────────────");
+                log.info("┌───────────────────────────────────────────────────────────────────");
+                log.info("│ 🚇 POLLING MODE: {} | Time: {}", mode.toUpperCase(), timestamp);
+                log.info("└───────────────────────────────────────────────────────────────────");
 
                 try {
                         // Fetch arrivals from TfL API
-                        log.info("📡 Fetching arrivals from TfL API for mode: {}", mode);
+                        log.info("📡 [{}] Step 1: Fetching arrivals from TfL API...", mode);
                         List<ArrivalPrediction> arrivals = tflApiClient.getArrivalsByMode(mode);
 
                         if (arrivals == null || arrivals.isEmpty()) {
                                 long duration = System.currentTimeMillis() - startMillis;
-                                log.warn("⚠️  STATUS: NO DATA | No arrivals received from TfL API for mode: {} | Took: {}ms",
-                                                mode,
-                                                duration);
+                                log.warn("⚠️  [{}] STATUS: NO DATA | No arrivals received | Took: {}ms", mode, duration);
 
                                 monitoringService.recordPollingDuration(mode, duration, "NO_DATA");
                                 return RefreshSummary.builder()
@@ -113,23 +121,26 @@ public class TflPollingService {
                                                 .build();
                         }
 
-                        log.info("✅ STATUS: SUCCESS | Received {} arrivals from TfL API", arrivals.size());
+                        log.info("✅ [{}] Step 1: Received {} arrivals from TfL API", mode, arrivals.size());
 
                         // Transform into grouped Station objects
-                        log.info("🔄 Transforming data into station-centric groups...");
+                        log.info("🔄 [{}] Step 2: Transforming data into station-centric groups...", mode);
                         Map<String, StationPredictions> groupedStations = transformationService
                                         .transformToStationGroups(arrivals);
+                        log.info("✅ [{}] Step 2: Transformed into {} station groups", mode, groupedStations.size());
 
                         // Publish to FCM in batch
-                        log.info("⚡ Publishing to FCM ({} stations)...", groupedStations.size());
-
+                        log.info("⚡ [{}] Step 3: Publishing to FCM ({} stations)...", mode, groupedStations.size());
                         Map<String, Object> fcmData = new HashMap<>(groupedStations);
                         fcmService.publishAll(fcmData);
                         int fcmCount = groupedStations.size();
+                        log.info("✅ [{}] Step 3: Queued {} FCM messages", mode, fcmCount);
 
                         long duration = System.currentTimeMillis() - startMillis;
-                        log.info("✅ SUMMARY: Mode={} | {} arrivals → {} station keys → {} FCM topics | Took: {}ms",
+                        log.info("┌───────────────────────────────────────────────────────────────────");
+                        log.info("│ ✅ [{}] SUMMARY: {} arrivals → {} station keys → {} FCM topics | Time: {}ms",
                                         mode, arrivals.size(), groupedStations.size(), fcmCount, duration);
+                        log.info("└───────────────────────────────────────────────────────────────────");
 
                         monitoringService.recordPollingDuration(mode, duration, "SUCCESS");
                         monitoringService.recordArrivalsCount(mode, arrivals.size());
@@ -150,8 +161,8 @@ public class TflPollingService {
 
                 } catch (Exception e) {
                         long duration = System.currentTimeMillis() - startMillis;
-                        log.error("❌ STATUS: FAILED | Error during TfL polling for mode: {} | Took: {}ms", mode,
-                                        duration, e);
+                        log.error("❌ [{}] STATUS: FAILED | Error during polling | Took: {}ms | Error: {}",
+                                        mode, duration, e.getMessage());
 
                         monitoringService.recordPollingDuration(mode, duration, "FAILED");
 
