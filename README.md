@@ -1,4 +1,4 @@
-# Stationly Backend
+# Stationly Syncer
 
 A high-performance Spring Boot middleware for Transport for London (TfL) data integration. Provides real-time arrival predictions, station metadata, and live line status updates.
 
@@ -57,8 +57,8 @@ mvn clean package -DskipTests
 
 Once running, access the interactive API documentation at:
 
-- **Local**: http://localhost:8080/StationlyBE/docs
-- **Production**: https://api.stationly.co.uk/StationlyBE/docs
+- **Local**: http://localhost:8080/StationlySyncer/docs
+- **Production**: https://api.stationly.co.uk/StationlySyncer/docs
 
 ## Deployment
 
