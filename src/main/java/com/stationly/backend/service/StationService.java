@@ -19,43 +19,6 @@ public class StationService {
     private final TflApiClient tflApiClient;
     private final DataRepository<Station, String> stationRepository;
 
-    /**
-     * Search stations based on search keys.
-     * Keys can be: mode, lineId, mode_lineId, lineId_direction,
-     * mode_lineId_direction
-     */
-    public List<Station> searchStations(String searchKey) {
-        List<Station> results = stationRepository.findByArrayContains("searchKeys", searchKey);
-        log.info("🔍 Search stations with searchKey '{}': found {}", searchKey, results.size());
-        return results;
-    }
-
-    public List<Station> getStationsByLine(String lineId) {
-        return searchStations(lineId);
-    }
-
-    /**
-      * Search stations within a given radius (km) of a location.
-      */
-    public List<Station> searchByLocation(double lat, double lon, double radiusKm) {
-        List<Station> allStations = stationRepository.findAll();
-        return allStations.stream()
-                .filter(station -> calculateDistanceInKm(lat, lon, station.getLat(), station.getLon()) <= radiusKm)
-                .collect(Collectors.toList());
-    }
-
-    private double calculateDistanceInKm(double lat1, double lon1, double lat2, double lon2) {
-        // Haversine formula
-        int R = 6371; // Radius of the earth in km
-        double dLat = Math.toRadians(lat2 - lat1);
-        double dLon = Math.toRadians(lon2 - lon1);
-        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
-                        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c;
-    }
-
     public void syncStationsByMode(String modeName) {
         syncStationsByMode(modeName, null);
     }

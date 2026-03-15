@@ -1,8 +1,6 @@
 package com.stationly.backend.service;
 
 import com.stationly.backend.client.TflApi;
-import com.stationly.backend.model.LineInfo;
-import com.stationly.backend.model.LineRouteResponse;
 import com.stationly.backend.model.LineStatusResponse;
 import com.stationly.backend.repository.DataRepository;
 import com.stationly.backend.util.TflUtils;
@@ -25,10 +23,6 @@ class LineServiceTest {
     @Mock
     private TflApi tflApiClient;
     @Mock
-    private DataRepository<LineInfo, String> lineRepository;
-    @Mock
-    private DataRepository<LineRouteResponse, String> routeRepository;
-    @Mock
     private DataRepository<LineStatusResponse, String> lineStatusRepository;
     @Mock
     private NotificationService fcmService;
@@ -37,7 +31,7 @@ class LineServiceTest {
 
     @BeforeEach
     void setUp() {
-        lineService = new LineService(tflApiClient, lineRepository, routeRepository, lineStatusRepository, fcmService);
+        lineService = new LineService(tflApiClient, lineStatusRepository, fcmService);
         ReflectionTestUtils.setField(lineService, "tflTransportModes", "tube,bus");
     }
 
@@ -156,26 +150,5 @@ class LineServiceTest {
         verify(fcmService, times(1)).publishAll(anyMap());
     }
 
-    @Test
-    void testGetLineStatuses_Filtering() {
-        // Given
-        LineStatusResponse r1 = LineStatusResponse.builder().id("victoria").mode("tube").build();
-        LineStatusResponse r2 = LineStatusResponse.builder().id("piccadilly").mode("tube").build();
-        LineStatusResponse r3 = LineStatusResponse.builder().id("bus-1").mode("bus").build();
 
-        when(lineStatusRepository.findAll()).thenReturn(List.of(r1, r2, r3));
-
-        // When
-        List<LineStatusResponse> all = lineService.getLineStatuses(null, null);
-        List<LineStatusResponse> tube = lineService.getLineStatuses(null, "tube");
-        List<LineStatusResponse> vic = lineService.getLineStatuses("victoria", null);
-        List<LineStatusResponse> vicTube = lineService.getLineStatuses("victoria", "tube");
-
-        // Then
-        assertEquals(3, all.size());
-        assertEquals(2, tube.size());
-        assertEquals(1, vic.size());
-        assertEquals("victoria", vic.get(0).getId());
-        assertEquals(1, vicTube.size());
-    }
 }

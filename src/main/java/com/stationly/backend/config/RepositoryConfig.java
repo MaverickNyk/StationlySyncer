@@ -14,23 +14,7 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class RepositoryConfig {
 
-    @Bean
-    public DataRepository<TransportMode, String> modeRepository(Firestore firestore) {
-        return new GenericFirestoreRepository<>(
-                firestore,
-                "modes",
-                TransportMode.class,
-                TransportMode::getModeName);
-    }
 
-    @Bean
-    public DataRepository<LineInfo, String> lineRepository(Firestore firestore) {
-        return new GenericFirestoreRepository<>(
-                firestore,
-                "lines",
-                LineInfo.class,
-                LineInfo::getId);
-    }
 
     @Bean
     public DataRepository<Station, String> stationRepository(Firestore firestore) {
@@ -41,14 +25,7 @@ public class RepositoryConfig {
                 Station::getNaptanId);
     }
 
-    @Bean
-    public DataRepository<LineRouteResponse, String> routeRepository(Firestore firestore) {
-        return new GenericFirestoreRepository<>(
-                firestore,
-                "routes",
-                LineRouteResponse.class,
-                LineRouteResponse::getId);
-    }
+
 
     @Bean
     public DataRepository<LineStatusResponse, String> lineStatusRepository(Firestore firestore) {
