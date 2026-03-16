@@ -178,33 +178,41 @@ public class DataTransformationService {
     }
 
     public String getPresentablePlatform(String mode, String rawPlatform) {
-        // 1. Handle Null or Missing Data
-        if (rawPlatform == null || rawPlatform.equalsIgnoreCase("null") || rawPlatform.trim().isEmpty()) {
-            return "bus".equalsIgnoreCase(mode) ? "No Stop assigned" : "No Platform assigned";
+        boolean isBus = "bus".equalsIgnoreCase(mode);
+
+        if (rawPlatform == null || rawPlatform.equalsIgnoreCase("null") || rawPlatform.trim().isEmpty() || rawPlatform.equalsIgnoreCase("unknown")) {
+            return isBus ? "Stop not assigned" : "Platform not assigned";
         }
 
-        rawPlatform = rawPlatform.trim();
+        String p = rawPlatform.trim();
 
-        // 2. Format Tube/Train descriptive strings (e.g., "Westbound - Platform 2")
-        if (rawPlatform.contains(" - ")) {
-            String[] parts = rawPlatform.split(" - ");
-            if (parts.length == 2) {
-                // Re-orders to "Platform 2 (Westbound)"
-                return parts[1] + " (" + parts[0] + ")";
+        if (isBus) {
+            if (p.toLowerCase().startsWith("stop ")) {
+                p = p.substring(5).trim();
+            }
+            return "Stop " + p.toUpperCase();
+        }
+
+        if (p.contains(" - ")) {
+            String[] parts = p.split(" - ");
+            if (parts.length >= 2) {
+                String desc = parts[0].trim();
+                String plat = parts[1].trim();
+                if (!plat.toLowerCase().startsWith("platform")) {
+                    plat = "Platform " + plat;
+                }
+                return plat + " (" + desc + ")";
             }
         }
 
-        // 3. Format Bus Stop letters (e.g., "BP" -> "Stop BP")
-        if ("bus".equalsIgnoreCase(mode)) {
-            return "Stop " + rawPlatform.toUpperCase();
+        if (p.matches("\\d+")) {
+            return "Platform " + p;
         }
 
-        // 4. Format Numeric platforms (e.g., "1" -> "Platform 1")
-        if (rawPlatform.matches("\\d+")) {
-            return "Platform " + rawPlatform;
+        if (p.toLowerCase().matches("^plat \\d+$")) {
+            return p.replaceFirst("(?i)^plat ", "Platform ");
         }
 
-        // Fallback for anything already formatted
-        return rawPlatform;
+        return p;
     }
 }
