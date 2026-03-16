@@ -28,6 +28,7 @@ public class TflPollingService {
         private final DataTransformationService transformationService;
         private final FcmService fcmService;
         private final MonitoringService monitoringService;
+        private final ChangeDetectionService changeDetectionService;
 
         @Value("${tfl.transport.modes}")
         private String tflTransportModes;
@@ -43,8 +44,10 @@ public class TflPollingService {
                 String timestamp = LocalDateTime.now().format(TIME_FORMATTER);
                 long startMillis = System.currentTimeMillis();
 
+                long currentCycle = changeDetectionService.incrementCycle();
                 log.info("╔═══════════════════════════════════════════════════════════════════");
-                log.info("║ 🚇 TFL REFRESH STARTED | Modes: {} | Time: {}", tflTransportModes.toUpperCase(), timestamp);
+                log.info("║ 🚇 TFL REFRESH STARTED | Modes: {} | Cycle: #{} | Time: {}", 
+                                tflTransportModes.toUpperCase(), currentCycle, timestamp);
                 log.info("╚═══════════════════════════════════════════════════════════════════");
 
                 String[] modes = tflTransportModes.split(",");
@@ -129,12 +132,23 @@ public class TflPollingService {
                                         .transformToStationGroups(arrivals);
                         log.info("✅ [{}] Step 2: Transformed into {} station groups", mode, groupedStations.size());
 
-                        // Publish to FCM in batch
-                        log.info("⚡ [{}] Step 3: Publishing to FCM ({} stations)...", mode, groupedStations.size());
-                        Map<String, Object> fcmData = new HashMap<>(groupedStations);
-                        fcmService.publishAll(fcmData);
-                        int fcmCount = groupedStations.size();
-                        log.info("✅ [{}] Step 3: Queued {} FCM messages", mode, fcmCount);
+                        // Publish to FCM in batch - Only if data changed
+                        log.info("⚡ [{}] Step 3: Performing modular change detection...", mode);
+                        
+                        // 1. Detect changes & heartbeats
+                        Map<String, Object> fcmData = changeDetectionService.getChangedStations(mode, groupedStations);
+                        
+                        // 2. Detect and handle vanished stations (Wipes)
+                        changeDetectionService.detectAndAddWipes(mode, arrivals.size(), groupedStations, fcmData);
+
+                        int fcmCount = fcmData.size();
+                        if (fcmCount > 0) {
+                                log.info("⚡ [{}] Step 3: Change detection found {}/{} stations targets. Publishing...", mode, fcmCount, groupedStations.size());
+                                fcmService.publishAll(fcmData);
+                                log.info("✅ [{}] Step 3: Queued {} FCM messages", mode, fcmCount);
+                        } else {
+                                log.info("✅ [{}] Step 3: 0/{} stations changed. Skipping FCM publish.", mode, groupedStations.size());
+                        }
 
                         long duration = System.currentTimeMillis() - startMillis;
                         log.info("┌───────────────────────────────────────────────────────────────────");
