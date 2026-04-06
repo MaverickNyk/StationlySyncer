@@ -62,7 +62,6 @@ class LineServiceTest {
         assertEquals("tube", result.get(0).getMode());
 
         verify(fcmService, times(1)).publishAll(anyMap());
-        verify(fcmService, never()).publishToTopic(anyString(), any());
         verify(lineStatusRepository, times(1)).saveAll(anyList());
     }
 
@@ -115,7 +114,6 @@ class LineServiceTest {
         // Then
         LineStatusResponse updated = result.get(0);
         assertEquals(knownMessage, updated.getReason()); // Should be preserved
-        verify(fcmService, never()).publishToTopic(anyString(), any());
         verify(fcmService, never()).publishAll(anyMap());
     }
 

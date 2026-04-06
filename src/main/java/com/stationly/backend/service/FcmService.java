@@ -5,6 +5,7 @@ import com.google.auth.oauth2.GoogleCredentials;
 import com.google.firebase.FirebaseApp;
 import com.google.firebase.FirebaseOptions;
 import com.google.firebase.messaging.*;
+import com.google.api.core.ApiFuture;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -13,7 +14,6 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -41,6 +41,7 @@ public class FcmService implements NotificationService {
 
     // Dedicated Pacer Thread
     private final Thread pacerThread;
+    private final java.util.concurrent.ExecutorService callbackExecutor = Executors.newFixedThreadPool(4);
     private volatile boolean running = true;
 
     // Configuration
@@ -110,6 +111,7 @@ public class FcmService implements NotificationService {
     @PreDestroy
     public void shutdown() {
         running = false;
+        callbackExecutor.shutdown();
         try {
             pacerThread.join(1000);
         } catch (InterruptedException e) {
@@ -160,18 +162,26 @@ public class FcmService implements NotificationService {
         }
 
         if (!batch.isEmpty()) {
-            try {
-                log.info("📤 [FCM] Processing batch of {} messages (Queue before: {})", batch.size(), pendingMessages.size() + batch.size());
-                BatchResponse response = FirebaseMessaging.getInstance().sendEach(batch);
-                if (response.getFailureCount() > 0) {
-                    log.warn("⚠️ [FCM] Batch completed with {} failures out of {}", response.getFailureCount(), batch.size());
-                } else {
-                    log.info("✅ [FCM] Batch sent successfully: {} messages", batch.size());
+            log.info("📤 [FCM] Processing batch of {} messages (Queue before: {})", batch.size(),
+                    pendingMessages.size() + batch.size());
+
+            // Use Async version to prevent blocking the pacer thread on network hangs
+            ApiFuture<BatchResponse> future = FirebaseMessaging.getInstance().sendEachAsync(batch);
+
+            future.addListener(() -> {
+                try {
+                    BatchResponse response = future.get();
+                    if (response.getFailureCount() > 0) {
+                        log.warn("⚠️ [FCM] Batch completed with {} failures out of {}", response.getFailureCount(),
+                                batch.size());
+                    } else {
+                        log.info("✅ [FCM] Batch sent successfully: {} messages", batch.size());
+                    }
+                } catch (Exception e) {
+                    log.error("❌ [FCM] Async Send error for batch of {}: {}", batch.size(), e.getMessage());
                 }
-                log.info("📊 [FCM] Queue after processing: {} items remaining", pendingMessages.size());
-            } catch (Exception e) {
-                log.error("❌ [FCM] Send error for batch of {}: {}", batch.size(), e.getMessage());
-            }
+                log.debug("📊 [FCM] Queue status: {} items remaining", pendingMessages.size());
+            }, callbackExecutor); // Use a shared executor for callbacks
         }
     }
 
@@ -202,36 +212,6 @@ public class FcmService implements NotificationService {
         log.info("📥 [FCM] Added {} messages to queue. Total pending: {}", added, pendingMessages.size());
     }
 
-    public void publishToTopic(String topic, Object payload) {
-        if (!fcmEnabled)
-            return;
-        try {
-            String jsonPayload = objectMapper.writeValueAsString(payload);
-            Message message = Message.builder()
-                    .setTopic(topic)
-                    .putData("payload", jsonPayload)
-                    .build();
-            FirebaseMessaging.getInstance().send(message);
-            log.debug("Successfully sent FCM message to topic: {}", topic);
-        } catch (Exception e) {
-            log.error("Failed to send FCM message to topic: {}", topic, e);
-        }
-    }
-
-    public void sendClearSignal(String topic) {
-        if (!fcmEnabled)
-            return;
-        try {
-            Message message = Message.builder()
-                    .setTopic(topic)
-                    .putData("action", "CLEAR")
-                    .build();
-            FirebaseMessaging.getInstance().send(message);
-            log.debug("Sent CLEAR signal to topic: {}", topic);
-        } catch (Exception e) {
-            log.error("Failed to send CLEAR signal to topic: {}", topic, e);
-        }
-    }
 
     private static class BoundedThreadManager extends com.google.firebase.ThreadManager {
         @Override

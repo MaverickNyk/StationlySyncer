@@ -24,9 +24,9 @@ public class StationService {
     }
 
     /**
-      * Sync stations for a specific mode (and optionally line) from TfL API
-      * and update Firestore with any changes.
-      */
+     * Sync stations for a specific mode (and optionally line) from TfL API
+     * and update Firestore with any changes.
+     */
     public void syncStationsByMode(String modeName, String lineId) {
         log.info("╔═══════════════════════════════════════════════════════════════════");
         log.info("║ 🚀 STATION SYNC STARTED | Mode: {} | Line: {}", modeName, lineId != null ? lineId : "ALL");
@@ -99,7 +99,7 @@ public class StationService {
 
         log.info("╔═══════════════════════════════════════════════════════════════════");
         log.info("║ ✅ [{}] SYNC COMPLETED | Processed: {} stations | Changed: {}",
-                        modeName, totalProcessed, changedStations.size());
+                modeName, totalProcessed, changedStations.size());
         log.info("╚═══════════════════════════════════════════════════════════════════");
     }
 
