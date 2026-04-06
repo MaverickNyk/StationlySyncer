@@ -80,19 +80,6 @@ public class TflApiClient implements TflApi {
                                 .block();
         }
 
-        public Map<String, Object> getLineRoute(String lineId) {
-                rateLimiter.acquire();
-                return webClient.get()
-                                .uri(uriBuilder -> uriBuilder
-                                                .path("/Line/{lineId}/Route")
-                                                .queryParam("app_key", appKey)
-                                                .build(lineId))
-                                .retrieve()
-                                .bodyToMono(new org.springframework.core.ParameterizedTypeReference<Map<String, Object>>() {
-                                })
-                                .timeout(java.time.Duration.ofSeconds(apiTimeout))
-                                .block();
-        }
 
         public Map<String, Object> getRouteSequence(String lineId, String direction) {
                 rateLimiter.acquire();
