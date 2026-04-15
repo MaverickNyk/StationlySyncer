@@ -38,3 +38,4 @@ local_scripts/
 frontend/
 IMPLEMENTATION_PLAN.md
 STATIONLY_FRONTEND_ARCHITECTURE.md
+graphify-out/
