@@ -6,7 +6,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -77,6 +79,7 @@ public class DataTransformationService {
 
                 byDirection.forEach((direction, directionArrivals) -> {
                     List<PredictionItem> items = directionArrivals.stream()
+                            .filter(a -> !isFarFutureUnassigned(a))
                             .map(this::toPredictionItem)
                             .sorted(Comparator.comparing(PredictionItem::getExpectedArrival,
                                     Comparator.nullsLast(Comparator.naturalOrder())))
@@ -177,10 +180,25 @@ public class DataTransformationService {
                 .build();
     }
 
+    // TfL only assigns platforms ~5–15 min before departure for these modes;
+    // far-future unplatformed predictions from them are noise, not real board data.
+    private static final Set<String> LATE_PLATFORM_MODES = Set.of("overground", "dlr", "elizabeth-line");
+    private static final long UNASSIGNED_PLATFORM_MAX_MINUTES = 20;
+
+    private boolean isFarFutureUnassigned(ArrivalPrediction arrival) {
+        String mode = arrival.getModeName();
+        if (mode == null || !LATE_PLATFORM_MODES.contains(mode.toLowerCase())) return false;
+        String p = arrival.getPlatformName();
+        if (p != null && !p.trim().isEmpty() && !p.equalsIgnoreCase("null") && !p.equalsIgnoreCase("unknown")) return false;
+        if (arrival.getExpectedArrival() == null) return true;
+        return Duration.between(ZonedDateTime.now(), arrival.getExpectedArrival()).toMinutes() > UNASSIGNED_PLATFORM_MAX_MINUTES;
+    }
+
     public String getPresentablePlatform(String mode, String rawPlatform) {
         boolean isBus = "bus".equalsIgnoreCase(mode);
 
-        if (rawPlatform == null || rawPlatform.equalsIgnoreCase("null") || rawPlatform.trim().isEmpty() || rawPlatform.equalsIgnoreCase("unknown")) {
+        String rp = rawPlatform == null ? "" : rawPlatform.trim().toLowerCase();
+        if (rp.isEmpty() || rp.equals("null") || rp.equals("unknown") || rp.equals("platform unknown") || rp.equals("no platform")) {
             return isBus ? "Stop not assigned" : "Platform not assigned";
         }
 
