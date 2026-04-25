@@ -28,7 +28,7 @@ public class TflApiClient implements TflApi {
                                 .baseUrl("https://api.tfl.gov.uk")
                                 .codecs(configurer -> configurer
                                                 .defaultCodecs()
-                                                .maxInMemorySize(2 * 1024 * 1024)) // 2MB
+                                                .maxInMemorySize(16 * 1024 * 1024)) // 16MB limit
                                 .build();
         }
 

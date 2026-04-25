@@ -26,9 +26,26 @@ public class TflPollingService {
     private final FcmService fcmService;
     private final MonitoringService monitoringService;
     private final ChangeDetectionService changeDetectionService;
+    private final com.stationly.backend.sync.FirestoreDatabaseSyncer firestoreDatabaseSyncer;
 
     @Value("${tfl.transport.modes}")
     private String tflTransportModes;
+
+    @Value("${tfl.polling.strategy:all}")
+    private String pollingStrategy;
+
+    private String[] activeModesArray;
+    private boolean isSubscribedStrategy;
+
+    @jakarta.annotation.PostConstruct
+    public void init() {
+        this.isSubscribedStrategy = "subscribed".equalsIgnoreCase(pollingStrategy);
+        String[] rawModes = tflTransportModes != null ? tflTransportModes.split(",") : new String[0];
+        this.activeModesArray = Arrays.stream(rawModes)
+                .map(String::trim)
+                .filter(m -> !m.isEmpty())
+                .toArray(String[]::new);
+    }
 
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
@@ -45,14 +62,22 @@ public class TflPollingService {
                 tflTransportModes.toUpperCase(), currentCycle, timestamp);
         log.info("╚═══════════════════════════════════════════════════════════════════");
 
-        String[] modes = tflTransportModes.split(",");
-        var executor = java.util.concurrent.Executors.newFixedThreadPool(modes.length + 2);
+        final java.util.Set<String> activeStationsFilter = getActiveSubscribedStations();
+
+        if (isSubscribedStrategy) {
+            log.info("🎯 Strategy: SUBSCRIBED. Found {} active stations globally.", activeStationsFilter.size());
+            if (activeStationsFilter.isEmpty()) {
+                long duration = System.currentTimeMillis() - startMillis;
+                log.info("😴 NAP MODE: No active station subscriptions right now. Pausing TfL fetching entirely! | {}ms", duration);
+                return;
+            }
+        }
+
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(activeModesArray.length + 2);
         try {
-            log.info("📋 Processing {} modes in parallel: {}", modes.length, Arrays.toString(modes));
-            List<CompletableFuture<Void>> futures = Arrays.stream(modes)
-                    .map(String::trim)
-                    .filter(mode -> !mode.isEmpty())
-                    .map(mode -> CompletableFuture.runAsync(() -> refreshMode(mode), executor))
+            log.info("📋 Processing {} modes in parallel: {}", activeModesArray.length, Arrays.toString(activeModesArray));
+            List<CompletableFuture<Void>> futures = Arrays.stream(activeModesArray)
+                    .map(mode -> CompletableFuture.runAsync(() -> refreshMode(mode, activeStationsFilter), executor))
                     .collect(Collectors.toList());
 
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
@@ -60,14 +85,14 @@ public class TflPollingService {
             long totalDuration = System.currentTimeMillis() - startMillis;
             monitoringService.recordPollingDuration("total", totalDuration, "SUCCESS");
             log.info("╔═══════════════════════════════════════════════════════════════════");
-            log.info("║ ✅ TFL REFRESH COMPLETED | Total Time: {}ms | Modes: {}", totalDuration, modes.length);
+            log.info("║ ✅ TFL REFRESH COMPLETED | Total Time: {}ms | Modes: {}", totalDuration, activeModesArray.length);
             log.info("╚═══════════════════════════════════════════════════════════════════");
         } finally {
             executor.shutdown();
         }
     }
 
-    private void refreshMode(String mode) {
+    private void refreshMode(String mode, java.util.Set<String> activeStationsFilter) {
         String timestamp = LocalDateTime.now().format(TIME_FORMATTER);
         long startMillis = System.currentTimeMillis();
 
@@ -86,7 +111,13 @@ public class TflPollingService {
                 return;
             }
 
-            log.info("✅ [{}] Step 1: Received {} arrivals", mode, arrivals.size());
+            arrivals = filterArrivals(arrivals, activeStationsFilter, mode);
+
+            if (arrivals.isEmpty()) {
+                long duration = System.currentTimeMillis() - startMillis;
+                monitoringService.recordPollingDuration(mode, duration, "SUCCESS");
+                return;
+            }
 
             log.info("🔄 [{}] Step 2: Transforming into station-centric groups...", mode);
             Map<String, StationPredictions> groupedStations = transformationService
@@ -118,5 +149,53 @@ public class TflPollingService {
             log.error("❌ [{}] FAILED | Took: {}ms | Error: {}", mode, duration, e.getMessage());
             monitoringService.recordPollingDuration(mode, duration, "FAILED");
         }
+    }
+
+    private java.util.Set<String> getActiveSubscribedStations() {
+        if (!isSubscribedStrategy) {
+            return null;
+        }
+
+        com.google.cloud.firestore.DocumentSnapshot doc = firestoreDatabaseSyncer.getDocument("metadata/subscribed_stations");
+        if (doc == null || !doc.exists()) {
+            return java.util.Collections.emptySet();
+        }
+
+        Map<String, Object> data = doc.getData();
+        if (data == null || !data.containsKey("stationCounts")) {
+            return java.util.Collections.emptySet();
+        }
+
+        @SuppressWarnings("unchecked")
+        Map<String, Number> counts = (Map<String, Number>) data.get("stationCounts");
+        if (counts == null) {
+            return java.util.Collections.emptySet();
+        }
+
+        return counts.entrySet().stream()
+                .filter(e -> e.getValue() != null && e.getValue().intValue() > 0)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toSet());
+    }
+
+    private List<ArrivalPrediction> filterArrivals(List<ArrivalPrediction> arrivals, java.util.Set<String> activeStationsFilter, String mode) {
+        int fetchedCount = arrivals.size();
+        
+        if (activeStationsFilter == null) {
+            log.info("✅ [{}] Step 1: Received {} arrivals", mode, arrivals.size());
+            return arrivals;
+        }
+
+        List<ArrivalPrediction> filtered = arrivals.stream()
+                .filter(a -> activeStationsFilter.contains(a.getNaptanId()))
+                .collect(Collectors.toList());
+        
+        log.info("✅ [{}] Step 1: Received {} arrivals (Filtered down from {} using Subscribed list)", mode, filtered.size(), fetchedCount);
+        
+        if (filtered.isEmpty()) {
+            log.info("⏭️  [{}] Step 1.5: 0 subscribed stations returned for this mode. Skipping processing.", mode);
+        }
+        
+        return filtered;
     }
 }
