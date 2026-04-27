@@ -2,6 +2,7 @@ name: Validate PR Source Branch
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize]
     branches:
       - release_staging
       - release_prod
@@ -9,22 +10,34 @@ on:
 jobs:
   check-source:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
       - name: Enforce source branch rules
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
           TARGET="${{ github.base_ref }}"
           SOURCE="${{ github.head_ref }}"
 
-          echo "PR: $SOURCE → $TARGET"
+          echo "PR #$PR_NUMBER: $SOURCE → $TARGET"
 
           if [ "$TARGET" = "release_staging" ] && [ "$SOURCE" != "main" ]; then
-            echo "❌ release_staging only accepts PRs from main. Got: $SOURCE"
+            gh pr comment $PR_NUMBER --repo $REPO \
+              --body "❌ **PR blocked.** \`release_staging\` only accepts PRs from \`main\`. This PR is from \`$SOURCE\` and has been closed automatically."
+            gh pr close $PR_NUMBER --repo $REPO
+            echo "Closed PR #$PR_NUMBER — invalid source: $SOURCE → $TARGET"
             exit 1
           fi
 
           if [ "$TARGET" = "release_prod" ] && [ "$SOURCE" != "release_staging" ]; then
-            echo "❌ release_prod only accepts PRs from release_staging. Got: $SOURCE"
+            gh pr comment $PR_NUMBER --repo $REPO \
+              --body "❌ **PR blocked.** \`release_prod\` only accepts PRs from \`release_staging\`. This PR is from \`$SOURCE\` and has been closed automatically."
+            gh pr close $PR_NUMBER --repo $REPO
+            echo "Closed PR #$PR_NUMBER — invalid source: $SOURCE → $TARGET"
             exit 1
           fi
 
-          echo "✅ Source branch $SOURCE is allowed to merge into $TARGET"
+          echo "✅ $SOURCE → $TARGET is allowed"
