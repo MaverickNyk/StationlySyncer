@@ -185,11 +185,14 @@ public class DataTransformationService {
     private static final Set<String> LATE_PLATFORM_MODES = Set.of("overground", "dlr", "elizabeth-line");
     private static final long UNASSIGNED_PLATFORM_MAX_MINUTES = 20;
 
+    private static final Set<String> UNASSIGNED_RAW_VALUES = Set.of("null", "unknown", "platform unknown", "no platform");
+
     private boolean isFarFutureUnassigned(ArrivalPrediction arrival) {
         String mode = arrival.getModeName();
         if (mode == null || !LATE_PLATFORM_MODES.contains(mode.toLowerCase())) return false;
         String p = arrival.getPlatformName();
-        if (p != null && !p.trim().isEmpty() && !p.equalsIgnoreCase("null") && !p.equalsIgnoreCase("unknown")) return false;
+        String rp = p == null ? "" : p.trim().toLowerCase();
+        if (!rp.isEmpty() && !UNASSIGNED_RAW_VALUES.contains(rp)) return false;
         if (arrival.getExpectedArrival() == null) return true;
         return Duration.between(ZonedDateTime.now(), arrival.getExpectedArrival()).toMinutes() > UNASSIGNED_PLATFORM_MAX_MINUTES;
     }
@@ -229,6 +232,12 @@ public class DataTransformationService {
 
         if (p.toLowerCase().matches("^plat \\d+$")) {
             return p.replaceFirst("(?i)^plat ", "Platform ");
+        }
+
+        // Short platform code: single letter (Elizabeth "A"/"B", Overground "D")
+        // or digit+letter suffix (DLR "4a") — TfL returns these raw without "Platform" prefix
+        if (p.matches("[A-Za-z]") || p.matches("\\d+[A-Za-z]+")) {
+            return "Platform " + p.toUpperCase();
         }
 
         return p;
