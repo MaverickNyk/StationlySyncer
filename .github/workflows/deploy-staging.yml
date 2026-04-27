@@ -28,19 +28,37 @@ jobs:
       - name: Deploy to staging server
         env:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          HOST: ${{ secrets.SERVER_HOST }}
+          HOST: ${{ vars.SERVER_HOST }}
         run: |
           echo "$SSH_KEY" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
+          SSH="ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no ubuntu@$HOST"
+          SCP="scp -i /tmp/deploy_key -o StrictHostKeyChecking=no"
 
-          scp -i /tmp/deploy_key -o StrictHostKeyChecking=no \
-            target/stationly-syncer-*.jar \
-            ubuntu@$HOST:~/stationly_syncer.jar
+          # 1. Deploy JAR
+          $SCP target/stationly-syncer-*.jar ubuntu@$HOST:~/stationly_syncer.jar
 
-          scp -i /tmp/deploy_key -o StrictHostKeyChecking=no \
-            /tmp/firebase-sa.json \
-            ubuntu@$HOST:~/config/firebase-service-account.json
+          # 2. Deploy Firebase service account
+          $SSH mkdir -p ~/config
+          $SCP /tmp/firebase-sa.json ubuntu@$HOST:~/config/firebase-service-account.json
 
-          ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no ubuntu@$HOST \
-            'sudo systemctl restart stationly.service && sudo systemctl status stationly.service --no-pager'
+          # 3. Write EnvironmentFile from GitHub secrets/variables
+          $SSH "sudo mkdir -p /etc/stationly && sudo tee /etc/stationly/staging.env > /dev/null << 'ENVEOF'
+          TFL_APP_KEY=${{ secrets.TFL_APP_KEY }}
+          TFL_TRANSPORT_MODES=${{ vars.TFL_TRANSPORT_MODES }}
+          TFL_POLLING_INTERVAL=${{ vars.TFL_POLLING_INTERVAL }}
+          TFL_POLLING_STRATEGY=${{ vars.TFL_POLLING_STRATEGY }}
+          TFL_API_TIMEOUT=${{ vars.TFL_API_TIMEOUT }}
+          TFL_ARRIVAL_PREDICTION_COUNT=${{ vars.TFL_ARRIVAL_PREDICTION_COUNT }}
+          FIREBASE_DATABASE_URL=${{ vars.FIREBASE_DATABASE_URL }}
+          FIRESTORE_PROJECT_ID=${{ vars.FIRESTORE_PROJECT_ID }}
+          FCM_SERVICE_ACCOUNT_PATH=${{ vars.FCM_SERVICE_ACCOUNT_PATH }}
+          OCI_MONITORING_ENABLED=${{ vars.OCI_MONITORING_ENABLED }}
+          OCI_MONITORING_COMPARTMENT_ID=${{ vars.OCI_MONITORING_COMPARTMENT_ID }}
+          STATION_SYNC_CRON=${{ vars.STATION_SYNC_CRON }}
+          ENVEOF
+          sudo chmod 600 /etc/stationly/staging.env"
+
+          # 4. Restart service
+          $SSH 'sudo systemctl restart stationly.service && sudo systemctl status stationly.service --no-pager'
 
           rm -f /tmp/deploy_key /tmp/firebase-sa.json
