@@ -1,0 +1,46 @@
+name: Deploy → Production
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build JAR
+        run: mvn package -DskipTests -q
+
+      - name: Write Firebase service account
+        run: echo "${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}" | base64 -d > /tmp/firebase-sa.json
+
+      - name: Deploy to production server
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          echo "$SSH_KEY" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
+
+          scp -i /tmp/deploy_key -o StrictHostKeyChecking=no \
+            target/stationly-syncer-*.jar \
+            ubuntu@$HOST:~/stationly_syncer.jar
+
+          scp -i /tmp/deploy_key -o StrictHostKeyChecking=no \
+            /tmp/firebase-sa.json \
+            ubuntu@$HOST:~/config/firebase-service-account.json
+
+          ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no ubuntu@$HOST \
+            'sudo systemctl restart stationly.service && sudo systemctl status stationly.service --no-pager'
+
+          rm -f /tmp/deploy_key /tmp/firebase-sa.json
