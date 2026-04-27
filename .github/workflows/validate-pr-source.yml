@@ -1,0 +1,30 @@
+name: Validate PR Source Branch
+
+on:
+  pull_request:
+    branches:
+      - release_staging
+      - release_prod
+
+jobs:
+  check-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce source branch rules
+        run: |
+          TARGET="${{ github.base_ref }}"
+          SOURCE="${{ github.head_ref }}"
+
+          echo "PR: $SOURCE → $TARGET"
+
+          if [ "$TARGET" = "release_staging" ] && [ "$SOURCE" != "main" ]; then
+            echo "❌ release_staging only accepts PRs from main. Got: $SOURCE"
+            exit 1
+          fi
+
+          if [ "$TARGET" = "release_prod" ] && [ "$SOURCE" != "release_staging" ]; then
+            echo "❌ release_prod only accepts PRs from release_staging. Got: $SOURCE"
+            exit 1
+          fi
+
+          echo "✅ Source branch $SOURCE is allowed to merge into $TARGET"

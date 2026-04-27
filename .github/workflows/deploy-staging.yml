@@ -3,7 +3,7 @@ name: Deploy → Staging
 on:
   push:
     branches:
-      - 'dev_*'
+      - release_staging
 
 jobs:
   deploy:
