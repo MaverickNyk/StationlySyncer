@@ -35,11 +35,11 @@ jobs:
           SCP="scp -i /tmp/deploy_key -o StrictHostKeyChecking=no"
 
           # 1. Deploy JAR
-          $SCP target/stationly_syncer-*.jar ubuntu@$HOST:~/stationly_syncer.jar
+          $SCP target/stationly_syncer-*.jar ubuntu@$HOST:/home/ubuntu/stationly_syncer.jar
 
           # 2. Deploy Firebase service account
-          $SSH mkdir -p ~/config
-          $SCP /tmp/firebase-sa.json ubuntu@$HOST:~/config/firebase-service-account.json
+          $SSH 'mkdir -p /home/ubuntu/config'
+          $SCP /tmp/firebase-sa.json ubuntu@$HOST:/home/ubuntu/config/firebase-service-account.json
 
           # 3. Write EnvironmentFile from GitHub secrets/variables
           $SSH "sudo mkdir -p /etc/stationly && sudo tee /etc/stationly/staging.env > /dev/null << 'ENVEOF'
