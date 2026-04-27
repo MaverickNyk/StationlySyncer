@@ -11,9 +11,9 @@ jobs:
     environment: staging
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4.7.0
         with:
           java-version: '21'
           distribution: 'temurin'
@@ -35,7 +35,7 @@ jobs:
           SCP="scp -i /tmp/deploy_key -o StrictHostKeyChecking=no"
 
           # 1. Deploy JAR
-          $SCP target/stationly-syncer-*.jar ubuntu@$HOST:~/stationly_syncer.jar
+          $SCP target/stationly_syncer-*.jar ubuntu@$HOST:~/stationly_syncer.jar
 
           # 2. Deploy Firebase service account
           $SSH mkdir -p ~/config
