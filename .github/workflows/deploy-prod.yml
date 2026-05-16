@@ -42,12 +42,32 @@ jobs:
             target/stationly_syncer-*.jar \
             ubuntu@${{ secrets.PROD_HOST }}:~/stationly_syncer.jar
 
-          ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} \
-            'mkdir -p ~/config'
+          ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} 'mkdir -p ~/config'
 
           scp -i ~/.ssh/prod.key \
             /tmp/firebase-sa.json \
             ubuntu@${{ secrets.PROD_HOST }}:~/config/firebase-service-account.json
+
+      - name: Write prod.env on server
+        env:
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+        run: |
+          ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} "
+            sudo mkdir -p /etc/stationly
+            printf 'TFL_APP_KEY=%s\n' '$TFL_APP_KEY' | sudo tee /etc/stationly/prod.env > /dev/null
+            printf 'TFL_TRANSPORT_MODES=%s\n' '${{ vars.TFL_TRANSPORT_MODES }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            printf 'TFL_POLLING_INTERVAL=%s\n' '${{ vars.TFL_POLLING_INTERVAL }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            printf 'TFL_POLLING_STRATEGY=%s\n' '${{ vars.TFL_POLLING_STRATEGY }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            printf 'TFL_API_TIMEOUT=%s\n' '${{ vars.TFL_API_TIMEOUT }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            printf 'TFL_ARRIVAL_PREDICTION_COUNT=%s\n' '${{ vars.TFL_ARRIVAL_PREDICTION_COUNT }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            printf 'FIREBASE_DATABASE_URL=%s\n' '${{ vars.FIREBASE_DATABASE_URL }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            printf 'FIRESTORE_PROJECT_ID=%s\n' '${{ vars.FIRESTORE_PROJECT_ID }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            printf 'FCM_SERVICE_ACCOUNT_PATH=%s\n' '${{ vars.FCM_SERVICE_ACCOUNT_PATH }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            printf 'OCI_MONITORING_ENABLED=%s\n' '${{ vars.OCI_MONITORING_ENABLED }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            printf 'OCI_MONITORING_COMPARTMENT_ID=%s\n' '${{ vars.OCI_MONITORING_COMPARTMENT_ID }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            printf 'STATION_SYNC_CRON=%s\n' '${{ vars.STATION_SYNC_CRON }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            sudo chmod 600 /etc/stationly/prod.env
+          "
 
       - name: Restart service
         run: |
