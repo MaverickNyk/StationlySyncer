@@ -28,9 +28,6 @@ public class FcmService implements NotificationService {
     @Value("${fcm.service-account-path}")
     private String serviceAccountPath;
 
-    @Value("${firebase.database-url:}")
-    private String databaseUrl;
-
     private final ObjectMapper objectMapper;
     private boolean fcmEnabled = false;
 
@@ -94,7 +91,6 @@ public class FcmService implements NotificationService {
             FileInputStream serviceAccount = new FileInputStream(path);
             FirebaseOptions options = FirebaseOptions.builder()
                     .setCredentials(GoogleCredentials.fromStream(serviceAccount))
-                    .setDatabaseUrl(databaseUrl)
                     .setThreadManager(new BoundedThreadManager())
                     .build();
 

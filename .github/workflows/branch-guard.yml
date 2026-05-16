@@ -1,0 +1,46 @@
+name: Branch Guard
+
+on:
+  pull_request:
+    branches: [main, release_staging, release_prod]
+
+jobs:
+  validate-source:
+    name: Validate source branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce main — only from dev_* or feature branches
+        if: github.base_ref == 'main'
+        run: |
+          SOURCE="${{ github.head_ref }}"
+          if echo "$SOURCE" | grep -qE '^(dev_|feature/|fix/|hotfix/)'; then
+            echo "✅ $SOURCE → main allowed"
+          else
+            echo "❌ main only accepts PRs from dev_*, feature/*, fix/*, or hotfix/* branches"
+            echo "Source branch: $SOURCE"
+            exit 1
+          fi
+
+      - name: Enforce release_staging — only from main
+        if: github.base_ref == 'release_staging'
+        run: |
+          SOURCE="${{ github.head_ref }}"
+          if [ "$SOURCE" = "main" ]; then
+            echo "✅ main → release_staging allowed"
+          else
+            echo "❌ release_staging only accepts PRs from main"
+            echo "Source branch: $SOURCE"
+            exit 1
+          fi
+
+      - name: Enforce release_prod — only from release_staging
+        if: github.base_ref == 'release_prod'
+        run: |
+          SOURCE="${{ github.head_ref }}"
+          if [ "$SOURCE" = "release_staging" ]; then
+            echo "✅ release_staging → release_prod allowed"
+          else
+            echo "❌ release_prod only accepts PRs from release_staging"
+            echo "Source branch: $SOURCE"
+            exit 1
+          fi
