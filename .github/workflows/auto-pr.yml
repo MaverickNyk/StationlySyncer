@@ -1,0 +1,56 @@
+name: Auto PR
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main, release_staging]
+
+jobs:
+  auto-pr:
+    if: github.event.pull_request.merged == true
+    name: Create next promotion PR
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Promote main → release_staging
+        if: github.base_ref == 'main'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          EXISTING=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --head main --base release_staging \
+            --state open --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            echo "PR #$EXISTING already open for main → release_staging"
+          else
+            gh pr create \
+              --repo ${{ github.repository }} \
+              --head main \
+              --base release_staging \
+              --title "chore: promote main → release_staging" \
+              --body "Auto-created after merging ${{ github.event.pull_request.html_url }} into main."
+          fi
+
+      - name: Promote release_staging → release_prod
+        if: github.base_ref == 'release_staging'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          EXISTING=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --head release_staging --base release_prod \
+            --state open --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            echo "PR #$EXISTING already open for release_staging → release_prod"
+          else
+            gh pr create \
+              --repo ${{ github.repository }} \
+              --head release_staging \
+              --base release_prod \
+              --title "chore: promote release_staging → release_prod" \
+              --body "Auto-created after merging ${{ github.event.pull_request.html_url }} into release_staging."
+          fi

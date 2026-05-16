@@ -1,0 +1,67 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [release_prod]
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build JAR
+        run: mvn package -DskipTests -q
+
+      - name: Write Firebase service account
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: echo "$FIREBASE_KEY" | base64 -d > /tmp/firebase-sa.json
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/prod.key
+          chmod 600 ~/.ssh/prod.key
+          ssh-keyscan -H ${{ secrets.PROD_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy JAR and Firebase key
+        run: |
+          scp -i ~/.ssh/prod.key \
+            target/stationly_syncer-*.jar \
+            ubuntu@${{ secrets.PROD_HOST }}:~/stationly_syncer.jar
+
+          ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} \
+            'mkdir -p ~/config'
+
+          scp -i ~/.ssh/prod.key \
+            /tmp/firebase-sa.json \
+            ubuntu@${{ secrets.PROD_HOST }}:~/config/firebase-service-account.json
+
+      - name: Restart service
+        run: |
+          ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} \
+            'sudo systemctl restart stationly.service'
+
+      - name: Health check
+        run: |
+          sleep 5
+          STATUS=$(ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} \
+            'systemctl is-active stationly.service' 2>/dev/null || echo "unknown")
+          if [ "$STATUS" = "active" ]; then
+            echo "✅ Production deployment complete — stationly.service is active"
+          else
+            echo "❌ Health check failed — stationly.service status: $STATUS"
+            exit 1
+          fi
