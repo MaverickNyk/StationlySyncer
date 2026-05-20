@@ -21,11 +21,15 @@ import java.util.concurrent.ConcurrentHashMap;
  * `getDocument()`.
  */
 @Component
-@RequiredArgsConstructor
 @Slf4j
 public class FirestoreDatabaseSyncer {
 
     private final Firestore firestore;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public FirestoreDatabaseSyncer(@org.springframework.beans.factory.annotation.Autowired(required = false) Firestore firestore) {
+        this.firestore = firestore;
+    }
 
     // Add any new collections/documents you want to keep synced here!
     private final List<String> pathsToSync = List.of(
