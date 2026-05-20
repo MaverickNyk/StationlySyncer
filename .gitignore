@@ -40,5 +40,7 @@ IMPLEMENTATION_PLAN.md
 STATIONLY_FRONTEND_ARCHITECTURE.md
 graphify-out/
 
-# Staging deploy scripts
 local_scripts/staging_*.sh
+
+# Local data / SQLite database
+data/

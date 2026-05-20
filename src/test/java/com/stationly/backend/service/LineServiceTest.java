@@ -26,19 +26,22 @@ class LineServiceTest {
     private DataRepository<LineStatusResponse, String> lineStatusRepository;
     @Mock
     private NotificationService fcmService;
+    @Mock
+    private LocalDatabaseService localDatabaseService;
 
     private LineService lineService;
 
     @BeforeEach
     void setUp() {
-        lineService = new LineService(tflApiClient, lineStatusRepository, fcmService);
+        lineService = new LineService(tflApiClient, lineStatusRepository, fcmService, localDatabaseService, null);
         ReflectionTestUtils.setField(lineService, "tflTransportModes", "tube,bus");
     }
 
     @Test
     void testSyncLineStatuses_NewStatus_PushesNotification() {
         // Given
-        when(lineStatusRepository.findAll()).thenReturn(Collections.emptyList());
+        when(localDatabaseService.getAllLineStatuses()).thenReturn(Collections.emptyList());
+        lineService.init();
 
         Map<String, Object> rawStatus = new HashMap<>();
         rawStatus.put("id", "victoria");
@@ -63,6 +66,7 @@ class LineServiceTest {
 
         verify(fcmService, times(1)).publishAll(anyMap());
         verify(lineStatusRepository, times(1)).saveAll(anyList());
+        verify(localDatabaseService, times(1)).upsertLineStatus(any(LineStatusResponse.class));
     }
 
     @Test
@@ -74,7 +78,13 @@ class LineServiceTest {
                 .statusSeverityDescription("Good Service")
                 .reason("Random Reason 1")
                 .build();
-        when(lineStatusRepository.findAll()).thenReturn(List.of(existing));
+        
+        // Let's manually set existing reason to one we know is in list:
+        String knownMessage = TflUtils.GOOD_SERVICE_MESSAGES.get(0);
+        existing.setReason(knownMessage);
+
+        when(localDatabaseService.getAllLineStatuses()).thenReturn(List.of(existing));
+        lineService.init();
 
         // Mock TfL response same as existing (but note: TfL gives empty reason for Good
         // Service, we generate random)
@@ -94,20 +104,6 @@ class LineServiceTest {
 
         when(tflApiClient.getLineStatuses("tube")).thenReturn(List.of(rawStatus));
 
-        // Assuming TflUtils.GOOD_SERVICE_MESSAGES contains "Random Reason 1" for the
-        // optimization test
-        // Reflection to inject specific message logic is hard, but we can rely on
-        // existing constants?
-        // Let's assume input existing reason IS in the list (we can't easily check
-        // internal list but we know it's there if we pick one)
-        // Actually, let's pick a known message from TflUtils if possible.
-        // Or just trust the logic: if old reason is "Safe" (in list) and new is "Good
-        // Service", we keep old.
-
-        // Let's manually set existing reason to one we know is in list:
-        String knownMessage = TflUtils.GOOD_SERVICE_MESSAGES.get(0);
-        existing.setReason(knownMessage);
-
         // When
         List<LineStatusResponse> result = lineService.syncLineStatuses();
 
@@ -115,6 +111,8 @@ class LineServiceTest {
         LineStatusResponse updated = result.get(0);
         assertEquals(knownMessage, updated.getReason()); // Should be preserved
         verify(fcmService, never()).publishAll(anyMap());
+        verify(lineStatusRepository, never()).saveAll(anyList());
+        verify(localDatabaseService, never()).upsertLineStatus(any(LineStatusResponse.class));
     }
 
     @Test
@@ -126,7 +124,8 @@ class LineServiceTest {
                 .statusSeverityDescription("Good Service")
                 .reason(TflUtils.GOOD_SERVICE_MESSAGES.get(0))
                 .build();
-        when(lineStatusRepository.findAll()).thenReturn(List.of(existing));
+        when(localDatabaseService.getAllLineStatuses()).thenReturn(List.of(existing));
+        lineService.init();
 
         // New status: Minor Delays
         Map<String, Object> rawStatus = new HashMap<>();
@@ -146,7 +145,7 @@ class LineServiceTest {
 
         // Then
         verify(fcmService, times(1)).publishAll(anyMap());
+        verify(localDatabaseService, times(1)).upsertLineStatus(any(LineStatusResponse.class));
     }
-
 
 }
