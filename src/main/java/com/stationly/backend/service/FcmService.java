@@ -197,6 +197,10 @@ public class FcmService implements NotificationService {
                 Message msg = Message.builder()
                         .setTopic(entry.getKey())
                         .putData("payload", jsonPayload)
+                        .setAndroidConfig(AndroidConfig.builder()
+                                .setPriority(AndroidConfig.Priority.HIGH)
+                                .setTtl(90 * 1000) // 90 seconds in milliseconds
+                                .build())
                         .build();
                 // Upsert: Replaces existing message for this topic if one was pending
                 pendingMessages.put(entry.getKey(), msg);
