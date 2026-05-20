@@ -17,7 +17,8 @@ public class RepositoryConfig {
 
 
     @Bean
-    public DataRepository<Station, String> stationRepository(Firestore firestore) {
+    public DataRepository<Station, String> stationRepository(
+            @org.springframework.beans.factory.annotation.Autowired(required = false) Firestore firestore) {
         return new GenericFirestoreRepository<>(
                 firestore,
                 "stations",
@@ -25,10 +26,9 @@ public class RepositoryConfig {
                 Station::getNaptanId);
     }
 
-
-
     @Bean
-    public DataRepository<LineStatusResponse, String> lineStatusRepository(Firestore firestore) {
+    public DataRepository<LineStatusResponse, String> lineStatusRepository(
+            @org.springframework.beans.factory.annotation.Autowired(required = false) Firestore firestore) {
         return new GenericFirestoreRepository<>(
                 firestore,
                 "lineStatuses",
