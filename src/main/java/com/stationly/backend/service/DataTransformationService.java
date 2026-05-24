@@ -74,8 +74,14 @@ public class DataTransformationService {
                         .build());
 
                 Map<String, List<ArrivalPrediction>> byDirection = lineArrivals.stream()
-                        .filter(a -> a.getDirection() != null)
-                        .collect(Collectors.groupingBy(ArrivalPrediction::getDirection));
+                        .collect(Collectors.groupingBy(a -> {
+                            String dir = a.getDirection();
+                            if (dir == null || dir.trim().isEmpty()) {
+                                String plat = a.getPlatformName() != null ? a.getPlatformName().toLowerCase() : "";
+                                return plat.contains("inbound") ? "inbound" : "outbound";
+                            }
+                            return dir.toLowerCase();
+                        }));
 
                 byDirection.forEach((direction, directionArrivals) -> {
                     List<PredictionItem> items = directionArrivals.stream()
