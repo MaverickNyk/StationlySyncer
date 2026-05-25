@@ -62,8 +62,6 @@ jobs:
             printf 'TFL_ARRIVAL_PREDICTION_COUNT=%s\n' '${{ vars.TFL_ARRIVAL_PREDICTION_COUNT }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
             printf 'FIRESTORE_PROJECT_ID=%s\n' '${{ vars.FIRESTORE_PROJECT_ID }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
             printf 'FCM_SERVICE_ACCOUNT_PATH=%s\n' '${{ vars.FCM_SERVICE_ACCOUNT_PATH }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
-            printf 'OCI_MONITORING_ENABLED=%s\n' '${{ vars.OCI_MONITORING_ENABLED }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
-            printf 'OCI_MONITORING_COMPARTMENT_ID=%s\n' '${{ vars.OCI_MONITORING_COMPARTMENT_ID }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
             printf 'STATION_SYNC_CRON=%s\n' '${{ vars.STATION_SYNC_CRON }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
             sudo chmod 600 /etc/stationly/prod.env
           "
