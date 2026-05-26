@@ -1,6 +1,5 @@
 package com.stationly.backend.scheduler;
 
-import com.stationly.backend.service.MonitoringService;
 import com.stationly.backend.service.StationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,7 +19,6 @@ import java.util.stream.Collectors;
 public class StationSyncScheduler {
 
     private final StationService stationService;
-    private final MonitoringService monitoringService;
 
     @Value("${tfl.transport.modes}")
     private String transportModes;
@@ -55,12 +53,10 @@ public class StationSyncScheduler {
             }
 
             long duration = System.currentTimeMillis() - startTime;
-            monitoringService.recordPollingDuration("station_sync_full", duration, "SUCCESS");
+            log.info("Station sync completed in {}ms", duration);
 
         } catch (Exception e) {
             log.error("💥 Critical error during station sync", e);
-            monitoringService.recordPollingDuration("station_sync_full", System.currentTimeMillis() - startTime,
-                    "FAILED");
         }
     }
 }

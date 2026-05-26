@@ -98,7 +98,6 @@ Real-time monitoring from production logs shows a massive optimization compared 
 | **`ChangeDetectionService`** | The decision engine. Manages state caches and ICD logic. |
 | **`FcmService`** | High-performance Firebase adapter using Java Virtual Threads. |
 | **`DataTransformationService`** | Normalizes complex TfL responses into mobile-optimized JSON. |
-| **`OciMonitoringService`** | Native integration with Oracle Cloud metrics & health checks. |
 
 ---
 
