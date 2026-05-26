@@ -24,7 +24,6 @@ public class TflPollingService {
     private final TflApiClient tflApiClient;
     private final DataTransformationService transformationService;
     private final FcmService fcmService;
-    private final MonitoringService monitoringService;
     private final ChangeDetectionService changeDetectionService;
     private final com.stationly.backend.sync.FirestoreDatabaseSyncer firestoreDatabaseSyncer;
 
@@ -83,7 +82,6 @@ public class TflPollingService {
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
             long totalDuration = System.currentTimeMillis() - startMillis;
-            monitoringService.recordPollingDuration("total", totalDuration, "SUCCESS");
             log.info("╔═══════════════════════════════════════════════════════════════════");
             log.info("║ ✅ TFL REFRESH COMPLETED | Total Time: {}ms | Modes: {}", totalDuration, activeModesArray.length);
             log.info("╚═══════════════════════════════════════════════════════════════════");
@@ -107,15 +105,12 @@ public class TflPollingService {
             if (arrivals == null || arrivals.isEmpty()) {
                 long duration = System.currentTimeMillis() - startMillis;
                 log.warn("⚠️  [{}] NO DATA | No arrivals received | Took: {}ms", mode, duration);
-                monitoringService.recordPollingDuration(mode, duration, "NO_DATA");
                 return;
             }
 
             arrivals = filterArrivals(arrivals, activeStationsFilter, mode);
 
             if (arrivals.isEmpty()) {
-                long duration = System.currentTimeMillis() - startMillis;
-                monitoringService.recordPollingDuration(mode, duration, "SUCCESS");
                 return;
             }
 
@@ -141,13 +136,9 @@ public class TflPollingService {
             log.info("│ ✅ [{}] {} arrivals → {} stations → {} FCM | {}ms",
                     mode, arrivals.size(), groupedStations.size(), fcmCount, duration);
 
-            monitoringService.recordPollingDuration(mode, duration, "SUCCESS");
-            monitoringService.recordArrivalsCount(mode, arrivals.size());
-
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - startMillis;
             log.error("❌ [{}] FAILED | Took: {}ms | Error: {}", mode, duration, e.getMessage());
-            monitoringService.recordPollingDuration(mode, duration, "FAILED");
         }
     }
 

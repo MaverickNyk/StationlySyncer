@@ -29,6 +29,15 @@ jobs:
           FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
         run: echo "$FIREBASE_KEY" | base64 -d > /tmp/firebase-sa.json
 
+      - name: Generate Production properties
+        env:
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+          FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
+        run: |
+          cp src/main/resources/application.properties /tmp/application.properties
+          sed -i "s|\${TFL_APP_KEY:default_key}|$TFL_APP_KEY|g" /tmp/application.properties
+          sed -i "s|\${FIRESTORE_PROJECT_ID:}|$FIRESTORE_PROJECT_ID|g" /tmp/application.properties
+
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
@@ -36,7 +45,7 @@ jobs:
           chmod 600 ~/.ssh/prod.key
           ssh-keyscan -H ${{ secrets.PROD_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Deploy JAR and Firebase key
+      - name: Deploy JAR, Firebase key and Config
         run: |
           scp -i ~/.ssh/prod.key \
             target/stationly_syncer-*.jar \
@@ -48,23 +57,15 @@ jobs:
             /tmp/firebase-sa.json \
             ubuntu@${{ secrets.PROD_HOST }}:~/config/firebase-service-account.json
 
-      - name: Write prod.env on server
-        env:
-          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+          scp -i ~/.ssh/prod.key \
+            /tmp/application.properties \
+            ubuntu@${{ secrets.PROD_HOST }}:~/config/application.properties
+
+      - name: Write dummy prod.env on server (for systemd compatibility)
         run: |
           ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} "
             sudo mkdir -p /etc/stationly
-            printf 'TFL_APP_KEY=%s\n' '$TFL_APP_KEY' | sudo tee /etc/stationly/prod.env > /dev/null
-            printf 'TFL_TRANSPORT_MODES=%s\n' '${{ vars.TFL_TRANSPORT_MODES }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
-            printf 'TFL_POLLING_INTERVAL=%s\n' '${{ vars.TFL_POLLING_INTERVAL }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
-            printf 'TFL_POLLING_STRATEGY=%s\n' '${{ vars.TFL_POLLING_STRATEGY }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
-            printf 'TFL_API_TIMEOUT=%s\n' '${{ vars.TFL_API_TIMEOUT }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
-            printf 'TFL_ARRIVAL_PREDICTION_COUNT=%s\n' '${{ vars.TFL_ARRIVAL_PREDICTION_COUNT }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
-            printf 'FIRESTORE_PROJECT_ID=%s\n' '${{ vars.FIRESTORE_PROJECT_ID }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
-            printf 'FCM_SERVICE_ACCOUNT_PATH=%s\n' '${{ vars.FCM_SERVICE_ACCOUNT_PATH }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
-            printf 'OCI_MONITORING_ENABLED=%s\n' '${{ vars.OCI_MONITORING_ENABLED }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
-            printf 'OCI_MONITORING_COMPARTMENT_ID=%s\n' '${{ vars.OCI_MONITORING_COMPARTMENT_ID }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
-            printf 'STATION_SYNC_CRON=%s\n' '${{ vars.STATION_SYNC_CRON }}' | sudo tee -a /etc/stationly/prod.env > /dev/null
+            echo '# Migrated to ~/config/application.properties' | sudo tee /etc/stationly/prod.env > /dev/null
             sudo chmod 600 /etc/stationly/prod.env
           "
 
