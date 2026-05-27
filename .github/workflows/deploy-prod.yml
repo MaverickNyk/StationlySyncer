@@ -62,8 +62,6 @@ jobs:
             target/stationly_syncer-*.jar \
             ubuntu@${{ secrets.PROD_HOST }}:~/stationly_syncer.jar
 
-          ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} 'mkdir -p ~/config'
-
           scp -i ~/.ssh/prod.key \
             /tmp/application.properties \
             ubuntu@${{ secrets.PROD_HOST }}:~/config/application.properties
