@@ -33,7 +33,6 @@ Thumbs.db
 
 # Local configuration
 src/main/resources/application-local.properties
-src/main/resources/application-remote.properties
 local_scripts/
 frontend/
 IMPLEMENTATION_PLAN.md

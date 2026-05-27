@@ -24,19 +24,30 @@ jobs:
       - name: Build JAR
         run: mvn package -DskipTests -q
 
-      - name: Write Firebase service account
-        env:
-          FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
-        run: echo "$FIREBASE_KEY" | base64 -d > /tmp/firebase-sa.json
-
-      - name: Generate Production properties
+      - name: Generate Production properties (Simple Merge)
         env:
           TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
           FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
         run: |
           cp src/main/resources/application.properties /tmp/application.properties
-          sed -i "s|\${TFL_APP_KEY:default_key}|$TFL_APP_KEY|g" /tmp/application.properties
-          sed -i "s|\${FIRESTORE_PROJECT_ID:}|$FIRESTORE_PROJECT_ID|g" /tmp/application.properties
+          
+          while IFS='=' read -r key value; do
+              [[ -z "$key" || "$key" =~ ^# ]] && continue
+              clean_key=$(echo "$key" | xargs)
+              
+              # Map key to standard uppercase env var name (e.g., tfl.app.key -> TFL_APP_KEY)
+              env_var_name=$(echo "$clean_key" | tr 'a-z.-' 'A-Z__')
+              secret_value="${!env_var_name}"
+              
+              if [ -n "$secret_value" ]; then
+                  echo "  Writing $clean_key from secret $env_var_name"
+                  if grep -q "^${clean_key}=" /tmp/application.properties; then
+                      sed -i "s|^${clean_key}=.*|${clean_key}=${secret_value}|g" /tmp/application.properties
+                  else
+                      echo "${clean_key}=${secret_value}" >> /tmp/application.properties
+                  fi
+              fi
+          done < src/main/resources/application-remote.properties
 
       - name: Setup SSH
         run: |
@@ -45,17 +56,11 @@ jobs:
           chmod 600 ~/.ssh/prod.key
           ssh-keyscan -H ${{ secrets.PROD_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Deploy JAR, Firebase key and Config
+      - name: Deploy JAR and Config
         run: |
           scp -i ~/.ssh/prod.key \
             target/stationly_syncer-*.jar \
             ubuntu@${{ secrets.PROD_HOST }}:~/stationly_syncer.jar
-
-          ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} 'mkdir -p ~/config'
-
-          scp -i ~/.ssh/prod.key \
-            /tmp/firebase-sa.json \
-            ubuntu@${{ secrets.PROD_HOST }}:~/config/firebase-service-account.json
 
           scp -i ~/.ssh/prod.key \
             /tmp/application.properties \
