@@ -57,19 +57,23 @@ class StationServiceTest {
     @Mock
     private DataRepository<Station, String> stationRepository;
 
+    @Mock
+    private LocalDatabaseService localDatabaseService;
+
     private StationService stationService;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
         tflApiClient = new StubTflApiClient();
-        stationService = new StationService(tflApiClient, stationRepository);
+        stationService = new StationService(tflApiClient, stationRepository, localDatabaseService, null);
     }
 
     @Test
     void testSyncStationsByMode_AggregatesAndSavesStations() {
-        // Mock Existing Data
-        when(stationRepository.findAll()).thenReturn(Collections.emptyList());
+        // Mock Existing Data in SQLite
+        when(localDatabaseService.getStationsBySearchKey(anyString())).thenReturn(Collections.emptyList());
+        when(localDatabaseService.getStationsExceptStopType(anyString())).thenReturn(Collections.emptyList());
 
         // Execute
         stationService.syncStationsByMode("bus");

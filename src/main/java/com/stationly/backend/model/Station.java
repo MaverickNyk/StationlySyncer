@@ -26,6 +26,10 @@ public class Station {
     private String indicator;
     private String stopLetter;
     private String lastUpdatedTime;
+    private String icsCode;
+    private String towards;
+    private String compassPoint;
+    private String stationNaptan;
 
     // Map of modes serving this station: ModeName -> ModeGroup
     @Builder.Default
