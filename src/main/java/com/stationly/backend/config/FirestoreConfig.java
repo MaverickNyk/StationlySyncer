@@ -54,8 +54,13 @@ public class FirestoreConfig {
     private GoogleCredentials getCredentials() throws IOException {
         // Priority 1: File path (Preferred for local/file-based envs)
         if (credentialsPath != null && !credentialsPath.isEmpty()) {
-            log.info("🔐 Loading Firestore credentials from file: {}", credentialsPath);
-            return GoogleCredentials.fromStream(new FileInputStream(credentialsPath));
+            java.io.File file = new java.io.File(credentialsPath);
+            if (file.exists()) {
+                log.info("🔐 Loading Firestore credentials from file: {}", credentialsPath);
+                return GoogleCredentials.fromStream(new FileInputStream(credentialsPath));
+            } else {
+                log.warn("⚠️ Firestore credentials file not found at: {}. Falling back...", credentialsPath);
+            }
         }
 
         // Priority 3: Default credentials (GCP environment)

@@ -1,23 +1,147 @@
 package com.stationly.backend.service;
 
 import ch.hsr.geohash.GeoHash;
+import com.google.cloud.firestore.*;
+import com.google.api.core.ApiFuture;
 import com.stationly.backend.client.TflApiClient;
 import com.stationly.backend.model.Station;
 import com.stationly.backend.repository.DataRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class StationService {
 
     private final TflApiClient tflApiClient;
     private final DataRepository<Station, String> stationRepository;
+    private final LocalDatabaseService localDatabaseService;
+    private final Firestore firestore;
+
+    @Autowired
+    public StationService(TflApiClient tflApiClient,
+                          DataRepository<Station, String> stationRepository,
+                          LocalDatabaseService localDatabaseService,
+                          @Autowired(required = false) Firestore firestore) {
+        this.tflApiClient = tflApiClient;
+        this.stationRepository = stationRepository;
+        this.localDatabaseService = localDatabaseService;
+        this.firestore = firestore;
+    }
+
+    private ListenerRegistration listenerRegistration;
+
+    @PostConstruct
+    public void init() {
+        log.info("CACHE: 📡 Initializing Stations cache...");
+
+        if (firestore != null) {
+            // 1. Perform Delta Sync on boot
+            try {
+                String lastSync = localDatabaseService.getLastSyncTime("stations");
+                log.info("CACHE: 🔄 Delta sync [stations]. Last sync: {}", lastSync != null ? lastSync : "Never");
+
+                Query query = firestore.collection("stations");
+                if (lastSync != null && !lastSync.isEmpty()) {
+                    query = query.whereGreaterThan("lastUpdatedTime", lastSync);
+                }
+
+                ApiFuture<QuerySnapshot> future = query.get();
+                QuerySnapshot snapshot = future.get();
+                if (!snapshot.isEmpty()) {
+                    log.info("CACHE: 📥 Found {} new/modified documents in [stations]. Applying deltas...", snapshot.size());
+                    List<Station> toUpdate = new ArrayList<>();
+                    String newestTime = lastSync != null ? lastSync : "";
+                    
+                    for (QueryDocumentSnapshot doc : snapshot.getDocuments()) {
+                        Station station = doc.toObject(Station.class);
+                        if (station != null && station.getNaptanId() != null) {
+                            toUpdate.add(station);
+                            if (station.getLastUpdatedTime() != null && station.getLastUpdatedTime().compareTo(newestTime) > 0) {
+                                newestTime = station.getLastUpdatedTime();
+                            }
+                        }
+                    }
+                    localDatabaseService.saveAllStations(toUpdate);
+                    if (!newestTime.isEmpty()) {
+                        localDatabaseService.updateLastSyncTime("stations", newestTime);
+                    }
+                } else {
+                    log.info("CACHE: 🏷️ Collection [stations] is already up to date.");
+                }
+            } catch (Exception e) {
+                log.warn("CACHE: ⚠️ Firestore delta sync for stations failed: {}", e.getMessage());
+            }
+
+            // 2. Register Active Snapshot Listener
+            try {
+                String lastSync = localDatabaseService.getLastSyncTime("stations");
+                if (lastSync == null || lastSync.isEmpty()) {
+                    lastSync = "1970-01-01T00:00:00Z";
+                }
+                log.info("CACHE: ⚡ Setting up real-time listener for stations > {}", lastSync);
+
+                final String initialSyncTime = lastSync;
+                listenerRegistration = firestore.collection("stations")
+                        .whereGreaterThan("lastUpdatedTime", initialSyncTime)
+                        .addSnapshotListener((snapshots, e) -> {
+                            if (e != null) {
+                                log.error("CACHE: ❌ Listen failed on stations", e);
+                                return;
+                            }
+                            if (snapshots != null) {
+                                String newestTime = initialSyncTime;
+                                boolean hasNewest = false;
+                                
+                                for (DocumentChange dc : snapshots.getDocumentChanges()) {
+                                    QueryDocumentSnapshot doc = dc.getDocument();
+                                    String id = doc.getId();
+                                    switch (dc.getType()) {
+                                        case ADDED:
+                                        case MODIFIED:
+                                            Station station = doc.toObject(Station.class);
+                                            if (station != null && station.getNaptanId() != null) {
+                                                log.info("CACHE: ⚡ Reactively caching station: {}", id);
+                                                localDatabaseService.upsertStation(station);
+                                                if (station.getLastUpdatedTime() != null && station.getLastUpdatedTime().compareTo(newestTime) > 0) {
+                                                    newestTime = station.getLastUpdatedTime();
+                                                    hasNewest = true;
+                                                }
+                                            }
+                                            break;
+                                        case REMOVED:
+                                            log.info("CACHE: ⚡ Reactively removing station: {}", id);
+                                            localDatabaseService.deleteStation(id);
+                                            break;
+                                    }
+                                }
+                                if (hasNewest) {
+                                    localDatabaseService.updateLastSyncTime("stations", newestTime);
+                                    log.info("CACHE: 📝 Updated [stations] lastSyncTime in SQLite metadata to {}", newestTime);
+                                }
+                            }
+                        });
+            } catch (Exception e) {
+                log.error("CACHE: ❌ Failed to register real-time Firestore listener for stations", e);
+            }
+        } else {
+            log.warn("CACHE: ⚠️ Firestore is null. Skipping Firestore sync and listener.");
+        }
+    }
+
+    @PreDestroy
+    public void cleanup() {
+        if (listenerRegistration != null) {
+            log.info("CACHE: Unregistering Firestore stations listener...");
+            listenerRegistration.remove();
+        }
+    }
 
     public void syncStationsByMode(String modeName) {
         syncStationsByMode(modeName, null);
@@ -141,6 +265,14 @@ public class StationService {
         if (!Objects.equals(existing.getIndicator(), fresh.getIndicator()))
             return true;
         if (!Objects.equals(existing.getStopLetter(), fresh.getStopLetter()))
+            return true;
+        if (!Objects.equals(existing.getIcsCode(), fresh.getIcsCode()))
+            return true;
+        if (!Objects.equals(existing.getTowards(), fresh.getTowards()))
+            return true;
+        if (!Objects.equals(existing.getCompassPoint(), fresh.getCompassPoint()))
+            return true;
+        if (!Objects.equals(existing.getStationNaptan(), fresh.getStationNaptan()))
             return true;
 
         // Compare Modes/Lines - Deep compare needed?
@@ -284,7 +416,11 @@ public class StationService {
                 .stopType(s.getStopType())
                 .indicator(s.getIndicator())
                 .stopLetter(s.getStopLetter())
-                .lastUpdatedTime(s.getLastUpdatedTime());
+                .lastUpdatedTime(s.getLastUpdatedTime())
+                .icsCode(s.getIcsCode())
+                .towards(s.getTowards())
+                .compassPoint(s.getCompassPoint())
+                .stationNaptan(s.getStationNaptan());
 
         // Copy Modes deeply
         Map<String, Station.ModeGroup> newModes = new HashMap<>();
@@ -326,10 +462,12 @@ public class StationService {
                 java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ISO_DATE_TIME));
 
         // Extract optional fields from TfL response
-        String indicator = (String) sp.get("indicator");
-        String stopLetter = (String) sp.get("stopLetter");
-        station.setIndicator(indicator);
-        station.setStopLetter(stopLetter);
+        station.setIndicator((String) sp.get("indicator"));
+        station.setStopLetter((String) sp.get("stopLetter"));
+        station.setIcsCode((String) sp.get("icsCode"));
+        station.setTowards((String) sp.get("towards"));
+        station.setCompassPoint((String) sp.get("compassPoint"));
+        station.setStationNaptan((String) sp.get("stationNaptan"));
 
         // Update Mode Group
         Station.ModeGroup modeGroup = station.getModes().computeIfAbsent(modeName, k -> Station.ModeGroup.builder()
@@ -359,22 +497,16 @@ public class StationService {
 
         if (lineId != null) {
             // If we are syncing a specific line, just get stations for that line
-            log.info("🔎 Fetching stations for lineId: {}", lineId);
-            stations = stationRepository.findByArrayContains("searchKeys", lineId);
+            log.info("🔎 Fetching stations for lineId: {} from SQLite", lineId);
+            stations = localDatabaseService.getStationsBySearchKey(lineId);
         } else if ("bus".equalsIgnoreCase(modeName) || "tram".equalsIgnoreCase(modeName)) {
             // For bus/tram, fetching ALL is too heavy (20k+). Fetch only for this mode.
-            // Risk: If a station gains 'bus' mode on a separate sync, we might miss it here
-            // if we don't have it.
-            // But typical overlap for bus is low/manageable or they are already distinct
-            // stops.
-            log.info("🔎 Fetching stations for mode: {} (Optimized fetch)", modeName);
-            stations = stationRepository.findByArrayContains("searchKeys", modeName);
+            log.info("🔎 Fetching stations for mode: {} (Optimized fetch) from SQLite", modeName);
+            stations = localDatabaseService.getStationsBySearchKey(modeName);
         } else {
-            // For Tube/DLR/Rail, we want to fetch EVERYTHING EXCEPT buses to ensure we
-            // don't duplicate/overwrite
-            // multi-mode stations (e.g. Waterloo) while still avoiding the 20k bus payload.
-            log.info("🔎 Fetching all stations EXCEPT buses (Safe fetch for {})", modeName);
-            stations = stationRepository.findAllExcept("stopType", "NaptanPublicBusCoachTram");
+            // For Tube/DLR/Rail, fetch EVERYTHING EXCEPT buses
+            log.info("🔎 Fetching all stations EXCEPT buses (Safe fetch for {}) from SQLite", modeName);
+            stations = localDatabaseService.getStationsExceptStopType("NaptanPublicBusCoachTram");
         }
 
         return stations.stream()
