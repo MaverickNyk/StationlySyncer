@@ -208,7 +208,10 @@ public class DataTransformationService {
 
         String rp = rawPlatform == null ? "" : rawPlatform.trim().toLowerCase();
         if (rp.isEmpty() || rp.equals("null") || rp.equals("unknown") || rp.equals("platform unknown") || rp.equals("no platform")) {
-            return isBus ? "Stop not assigned" : "Platform not assigned";
+            // Unassigned bus stop → empty (client renders just the line, no
+            // confusing "Stop not assigned"). Rail keeps a presentable label.
+            // Must stay in lockstep with stationly-backend formatters.ts.
+            return isBus ? "" : "Platform not assigned";
         }
 
         String p = rawPlatform.trim();
