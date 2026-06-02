@@ -25,7 +25,10 @@ public class Station {
     // Optional fields from TfL API
     private String indicator;
     private String stopLetter;
-    private String lastUpdatedTime;
+    // Replication watermark — Object (not String) so Firestore toObject tolerates
+    // both legacy ISO strings and post-migration epoch-millis numbers. Coerce with
+    // TimeUtils.toEpochMs; writers set a Long (epoch millis).
+    private Object lastUpdatedTime;
     private String icsCode;
     private String towards;
     private String compassPoint;

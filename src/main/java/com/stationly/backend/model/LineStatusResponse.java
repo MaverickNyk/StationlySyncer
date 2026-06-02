@@ -15,5 +15,7 @@ public class LineStatusResponse {
     private String mode;
     private String statusSeverityDescription;
     private String reason;
-    private String lastUpdatedTime;
+    // Replication watermark — Object so toObject tolerates string|number across
+    // the cutover. Coerce with TimeUtils.toEpochMs; writers set a Long.
+    private Object lastUpdatedTime;
 }
