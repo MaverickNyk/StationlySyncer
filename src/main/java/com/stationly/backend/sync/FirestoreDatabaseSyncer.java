@@ -3,16 +3,18 @@ package com.stationly.backend.sync;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.ListenerRegistration;
+import com.stationly.backend.service.LocalDatabaseService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * Universal manager for syncing targeted Firebase metadata documents into local
@@ -25,10 +27,14 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FirestoreDatabaseSyncer {
 
     private final Firestore firestore;
+    private final LocalDatabaseService localDatabaseService;
 
     @org.springframework.beans.factory.annotation.Autowired
-    public FirestoreDatabaseSyncer(@org.springframework.beans.factory.annotation.Autowired(required = false) Firestore firestore) {
+    public FirestoreDatabaseSyncer(
+            @org.springframework.beans.factory.annotation.Autowired(required = false) Firestore firestore,
+            LocalDatabaseService localDatabaseService) {
         this.firestore = firestore;
+        this.localDatabaseService = localDatabaseService;
     }
 
     // Add any new collections/documents you want to keep synced here!
@@ -73,9 +79,13 @@ public class FirestoreDatabaseSyncer {
                         if (snapshot != null && snapshot.exists()) {
                             documentsCache.put(path, snapshot);
                             log.debug("🔄 Synced updated document into RAM cache: {}", path);
+                            persistIfSubscribedStations(path, snapshot);
                         } else {
                             log.warn("⚠️ Document {} missing or deleted from Firebase", path);
                             documentsCache.remove(path);
+                            // Deliberately do NOT wipe the SQLite mirror on a
+                            // transient remove — keeping the last-known set means
+                            // we never accidentally miss every subscribed station.
                         }
                     });
 
@@ -102,6 +112,35 @@ public class FirestoreDatabaseSyncer {
             return snapshot.toObject(valueType);
         }
         return null;
+    }
+
+    /**
+     * Mirror metadata/subscribed_stations into SQLite (and advance its sync
+     * checkpoint) on every realtime update — the same master→slave pattern as
+     * the other collections. RAM remains the primary read path; SQLite is the
+     * durable cold-start copy so a restart never misses a subscribed station.
+     */
+    private void persistIfSubscribedStations(String path, DocumentSnapshot snapshot) {
+        if (!"metadata/subscribed_stations".equals(path) || localDatabaseService == null) return;
+        try {
+            Map<String, Object> data = snapshot.getData();
+            Object countsObj = (data != null) ? data.get("stationCounts") : null;
+            if (!(countsObj instanceof Map)) return;
+            @SuppressWarnings("unchecked")
+            Map<String, Number> counts = (Map<String, Number>) countsObj;
+            Set<String> active = counts.entrySet().stream()
+                    .filter(e -> e.getValue() != null && e.getValue().intValue() > 0)
+                    .map(Map.Entry::getKey)
+                    .collect(Collectors.toSet());
+            localDatabaseService.replaceSubscribedStations(active);
+            // Keep a checkpoint like every other synced collection.
+            Object lut = (data != null) ? data.get("lastUpdatedTime") : null;
+            String checkpoint = (lut != null) ? String.valueOf(lut) : String.valueOf(System.currentTimeMillis());
+            localDatabaseService.updateLastSyncTime("subscribed_stations", checkpoint);
+            log.debug("💾 Mirrored {} subscribed stations to SQLite (checkpoint {})", active.size(), checkpoint);
+        } catch (Exception e) {
+            log.error("❌ Failed to mirror subscribed_stations to SQLite", e);
+        }
     }
 
     @PreDestroy

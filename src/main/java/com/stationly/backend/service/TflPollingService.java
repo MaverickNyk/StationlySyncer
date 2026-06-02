@@ -26,6 +26,7 @@ public class TflPollingService {
     private final FcmService fcmService;
     private final ChangeDetectionService changeDetectionService;
     private final com.stationly.backend.sync.FirestoreDatabaseSyncer firestoreDatabaseSyncer;
+    private final LocalDatabaseService localDatabaseService;
 
     @Value("${tfl.transport.modes}")
     private String tflTransportModes;
@@ -147,26 +148,33 @@ public class TflPollingService {
             return null;
         }
 
+        // 1. Prefer the live realtime snapshot (RAM, kept by FirestoreDatabaseSyncer).
         com.google.cloud.firestore.DocumentSnapshot doc = firestoreDatabaseSyncer.getDocument("metadata/subscribed_stations");
-        if (doc == null || !doc.exists()) {
-            return java.util.Collections.emptySet();
+        if (doc != null && doc.exists()) {
+            Map<String, Object> data = doc.getData();
+            Object countsObj = (data != null) ? data.get("stationCounts") : null;
+            if (countsObj instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Number> counts = (Map<String, Number>) countsObj;
+                java.util.Set<String> active = counts.entrySet().stream()
+                        .filter(e -> e.getValue() != null && e.getValue().intValue() > 0)
+                        .map(Map.Entry::getKey)
+                        .collect(Collectors.toSet());
+                // SQLite is kept in sync by the realtime listener
+                // (FirestoreDatabaseSyncer), same as every other collection — so
+                // here we just return the live set.
+                return active;
+            }
+            // Doc present but no usable stationCounts — don't trust it enough to
+            // wipe the durable copy; fall through to the SQLite set below.
         }
 
-        Map<String, Object> data = doc.getData();
-        if (data == null || !data.containsKey("stationCounts")) {
-            return java.util.Collections.emptySet();
-        }
-
-        @SuppressWarnings("unchecked")
-        Map<String, Number> counts = (Map<String, Number>) data.get("stationCounts");
-        if (counts == null) {
-            return java.util.Collections.emptySet();
-        }
-
-        return counts.entrySet().stream()
-                .filter(e -> e.getValue() != null && e.getValue().intValue() > 0)
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toSet());
+        // 2. RAM cold (just restarted, listener not warm yet) or malformed →
+        //    use the durable SQLite mirror so we never miss a subscribed station
+        //    and never drop into NAP MODE during the warm-up window.
+        java.util.Set<String> fromDb = localDatabaseService.getSubscribedStationIds();
+        log.warn("⚠️ subscribed_stations not live in RAM — using {} stations from SQLite fallback.", fromDb.size());
+        return fromDb;
     }
 
     private List<ArrivalPrediction> filterArrivals(List<ArrivalPrediction> arrivals, java.util.Set<String> activeStationsFilter, String mode) {
