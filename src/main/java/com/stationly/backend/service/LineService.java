@@ -4,6 +4,7 @@ import com.google.cloud.firestore.*;
 import com.google.api.core.ApiFuture;
 import com.stationly.backend.client.TflApi;
 import com.stationly.backend.model.LineStatusResponse;
+import com.stationly.backend.util.TimeUtils;
 import com.stationly.backend.repository.DataRepository;
 import com.stationly.backend.util.TflUtils;
 
@@ -71,26 +72,25 @@ public class LineService {
 
                 Query query = firestore.collection("lineStatuses");
                 if (lastSync != null && !lastSync.isEmpty()) {
-                    query = query.whereGreaterThan("lastUpdatedTime", lastSync);
+                    query = query.whereGreaterThan("lastUpdatedTime", TimeUtils.toEpochMs(lastSync));
                 }
 
                 ApiFuture<QuerySnapshot> future = query.get();
                 QuerySnapshot snapshot = future.get();
                 if (!snapshot.isEmpty()) {
                     log.info("CACHE: 📥 Found {} new/modified documents in [lineStatuses]. Applying deltas...", snapshot.size());
-                    String newestTime = lastSync != null ? lastSync : "";
+                    long newestMs = TimeUtils.toEpochMs(lastSync);
                     for (QueryDocumentSnapshot doc : snapshot.getDocuments()) {
                         LineStatusResponse status = doc.toObject(LineStatusResponse.class);
                         if (status != null && status.getId() != null) {
                             lineStatusesCache.put(status.getId(), status);
                             localDatabaseService.upsertLineStatus(status);
-                            if (status.getLastUpdatedTime() != null && status.getLastUpdatedTime().compareTo(newestTime) > 0) {
-                                newestTime = status.getLastUpdatedTime();
-                            }
+                            long ts = TimeUtils.toEpochMs(status.getLastUpdatedTime());
+                            if (ts > newestMs) newestMs = ts;
                         }
                     }
-                    if (!newestTime.isEmpty()) {
-                        localDatabaseService.updateLastSyncTime("lineStatuses", newestTime);
+                    if (newestMs > 0) {
+                        localDatabaseService.updateLastSyncTime("lineStatuses", String.valueOf(newestMs));
                     }
                 } else {
                     log.info("CACHE: 🏷️ Collection [lineStatuses] is already up to date.");
@@ -102,21 +102,18 @@ public class LineService {
             try {
                 // Register real-time updates for changes after lastSyncTime
                 String lastSync = localDatabaseService.getLastSyncTime("lineStatuses");
-                if (lastSync == null || lastSync.isEmpty()) {
-                    lastSync = "1970-01-01T00:00:00Z";
-                }
-                log.info("CACHE: ⚡ Setting up real-time listener for lineStatuses > {}", lastSync);
+                final long initialMs = TimeUtils.toEpochMs(lastSync); // 0 if never synced
+                log.info("CACHE: ⚡ Setting up real-time listener for lineStatuses > {}", initialMs);
 
-                final String initialSyncTime = lastSync;
                 listenerRegistration = firestore.collection("lineStatuses")
-                        .whereGreaterThan("lastUpdatedTime", initialSyncTime)
+                        .whereGreaterThan("lastUpdatedTime", initialMs)
                         .addSnapshotListener((snapshots, e) -> {
                             if (e != null) {
                                 log.error("CACHE: ❌ Listen failed", e);
                                 return;
                             }
                             if (snapshots != null) {
-                                String newestTime = initialSyncTime;
+                                long newestMs = initialMs;
                                 boolean hasNewest = false;
                                 for (DocumentChange dc : snapshots.getDocumentChanges()) {
                                     QueryDocumentSnapshot doc = dc.getDocument();
@@ -127,21 +124,20 @@ public class LineService {
                                             LineStatusResponse status = doc.toObject(LineStatusResponse.class);
                                             if (status != null && status.getId() != null) {
                                                 LineStatusResponse existing = lineStatusesCache.get(status.getId());
-                                                if (existing == null || status.getLastUpdatedTime() == null 
-                                                        || existing.getLastUpdatedTime() == null
-                                                        || status.getLastUpdatedTime().compareTo(existing.getLastUpdatedTime()) > 0) {
-                                                    
-                                                    log.info("CACHE: ⚡ Real-time update for line: {} ({} -> {})", 
-                                                            id, 
-                                                            existing != null ? existing.getLastUpdatedTime() : "none", 
+                                                long incomingMs = TimeUtils.toEpochMs(status.getLastUpdatedTime());
+                                                long existingMs = (existing != null) ? TimeUtils.toEpochMs(existing.getLastUpdatedTime()) : 0L;
+                                                if (existing == null || incomingMs == 0L || existingMs == 0L || incomingMs > existingMs) {
+
+                                                    log.info("CACHE: ⚡ Real-time update for line: {} ({} -> {})",
+                                                            id,
+                                                            existing != null ? existing.getLastUpdatedTime() : "none",
                                                             status.getLastUpdatedTime());
-                                                    
+
                                                     lineStatusesCache.put(id, status);
                                                     localDatabaseService.upsertLineStatus(status);
-                                                    
-                                                    if (status.getLastUpdatedTime() != null 
-                                                            && status.getLastUpdatedTime().compareTo(newestTime) > 0) {
-                                                        newestTime = status.getLastUpdatedTime();
+
+                                                    if (incomingMs > newestMs) {
+                                                        newestMs = incomingMs;
                                                         hasNewest = true;
                                                     }
                                                 }
@@ -155,8 +151,8 @@ public class LineService {
                                     }
                                 }
                                 if (hasNewest) {
-                                    localDatabaseService.updateLastSyncTime("lineStatuses", newestTime);
-                                    log.info("CACHE: 📝 Updated [lineStatuses] lastSyncTime in SQLite metadata to {}", newestTime);
+                                    localDatabaseService.updateLastSyncTime("lineStatuses", String.valueOf(newestMs));
+                                    log.info("CACHE: 📝 Updated [lineStatuses] lastSyncTime in SQLite metadata to {}", newestMs);
                                 }
                             }
                         });
@@ -347,17 +343,13 @@ public class LineService {
             reason = (String) selectedStatus.get("reason");
         }
 
-        String utcTime = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
-                .withZone(java.time.ZoneOffset.UTC)
-                .format(java.time.Instant.now());
-
         return LineStatusResponse.builder()
                 .id(id)
                 .name(name)
                 .statusSeverityDescription(statusSeverityDescription)
                 .reason(reason) // Store the raw reason from TfL
                 .mode(mode)
-                .lastUpdatedTime(utcTime)
+                .lastUpdatedTime(TimeUtils.nowMs()) // epoch millis (was ISO string)
                 .build();
     }
 

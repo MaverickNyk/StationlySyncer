@@ -6,6 +6,7 @@ import com.google.api.core.ApiFuture;
 import com.stationly.backend.client.TflApiClient;
 import com.stationly.backend.model.Station;
 import com.stationly.backend.repository.DataRepository;
+import com.stationly.backend.util.TimeUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -49,7 +50,7 @@ public class StationService {
 
                 Query query = firestore.collection("stations");
                 if (lastSync != null && !lastSync.isEmpty()) {
-                    query = query.whereGreaterThan("lastUpdatedTime", lastSync);
+                    query = query.whereGreaterThan("lastUpdatedTime", TimeUtils.toEpochMs(lastSync));
                 }
 
                 ApiFuture<QuerySnapshot> future = query.get();
@@ -57,20 +58,19 @@ public class StationService {
                 if (!snapshot.isEmpty()) {
                     log.info("CACHE: 📥 Found {} new/modified documents in [stations]. Applying deltas...", snapshot.size());
                     List<Station> toUpdate = new ArrayList<>();
-                    String newestTime = lastSync != null ? lastSync : "";
-                    
+                    long newestMs = TimeUtils.toEpochMs(lastSync);
+
                     for (QueryDocumentSnapshot doc : snapshot.getDocuments()) {
                         Station station = doc.toObject(Station.class);
                         if (station != null && station.getNaptanId() != null) {
                             toUpdate.add(station);
-                            if (station.getLastUpdatedTime() != null && station.getLastUpdatedTime().compareTo(newestTime) > 0) {
-                                newestTime = station.getLastUpdatedTime();
-                            }
+                            long ts = TimeUtils.toEpochMs(station.getLastUpdatedTime());
+                            if (ts > newestMs) newestMs = ts;
                         }
                     }
                     localDatabaseService.saveAllStations(toUpdate);
-                    if (!newestTime.isEmpty()) {
-                        localDatabaseService.updateLastSyncTime("stations", newestTime);
+                    if (newestMs > 0) {
+                        localDatabaseService.updateLastSyncTime("stations", String.valueOf(newestMs));
                     }
                 } else {
                     log.info("CACHE: 🏷️ Collection [stations] is already up to date.");
@@ -82,23 +82,20 @@ public class StationService {
             // 2. Register Active Snapshot Listener
             try {
                 String lastSync = localDatabaseService.getLastSyncTime("stations");
-                if (lastSync == null || lastSync.isEmpty()) {
-                    lastSync = "1970-01-01T00:00:00Z";
-                }
-                log.info("CACHE: ⚡ Setting up real-time listener for stations > {}", lastSync);
+                final long initialMs = TimeUtils.toEpochMs(lastSync); // 0 if never synced
+                log.info("CACHE: ⚡ Setting up real-time listener for stations > {}", initialMs);
 
-                final String initialSyncTime = lastSync;
                 listenerRegistration = firestore.collection("stations")
-                        .whereGreaterThan("lastUpdatedTime", initialSyncTime)
+                        .whereGreaterThan("lastUpdatedTime", initialMs)
                         .addSnapshotListener((snapshots, e) -> {
                             if (e != null) {
                                 log.error("CACHE: ❌ Listen failed on stations", e);
                                 return;
                             }
                             if (snapshots != null) {
-                                String newestTime = initialSyncTime;
+                                long newestMs = initialMs;
                                 boolean hasNewest = false;
-                                
+
                                 for (DocumentChange dc : snapshots.getDocumentChanges()) {
                                     QueryDocumentSnapshot doc = dc.getDocument();
                                     String id = doc.getId();
@@ -109,8 +106,9 @@ public class StationService {
                                             if (station != null && station.getNaptanId() != null) {
                                                 log.info("CACHE: ⚡ Reactively caching station: {}", id);
                                                 localDatabaseService.upsertStation(station);
-                                                if (station.getLastUpdatedTime() != null && station.getLastUpdatedTime().compareTo(newestTime) > 0) {
-                                                    newestTime = station.getLastUpdatedTime();
+                                                long ts = TimeUtils.toEpochMs(station.getLastUpdatedTime());
+                                                if (ts > newestMs) {
+                                                    newestMs = ts;
                                                     hasNewest = true;
                                                 }
                                             }
@@ -122,8 +120,8 @@ public class StationService {
                                     }
                                 }
                                 if (hasNewest) {
-                                    localDatabaseService.updateLastSyncTime("stations", newestTime);
-                                    log.info("CACHE: 📝 Updated [stations] lastSyncTime in SQLite metadata to {}", newestTime);
+                                    localDatabaseService.updateLastSyncTime("stations", String.valueOf(newestMs));
+                                    log.info("CACHE: 📝 Updated [stations] lastSyncTime in SQLite metadata to {}", newestMs);
                                 }
                             }
                         });
@@ -458,8 +456,8 @@ public class StationService {
         station.setLon((Double) sp.get("lon"));
         station.setStopType((String) sp.get("stopType"));
         station.setGeoHash(GeoHash.geoHashStringWithCharacterPrecision(station.getLat(), station.getLon(), 9));
-        station.setLastUpdatedTime(
-                java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ISO_DATE_TIME));
+        // Epoch millis (was LocalDateTime.now() ISO — the no-Z/nanosecond bug).
+        station.setLastUpdatedTime(TimeUtils.nowMs());
 
         // Extract optional fields from TfL response
         station.setIndicator((String) sp.get("indicator"));
