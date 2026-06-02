@@ -2,6 +2,7 @@ package com.stationly.backend.service;
 
 import com.stationly.backend.model.LineStatusResponse;
 import com.stationly.backend.model.Station;
+import com.stationly.backend.util.TimeUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,8 +14,10 @@ import java.io.File;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 @Slf4j
@@ -92,11 +95,20 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
 
         String indexStopType = "CREATE INDEX IF NOT EXISTS idx_stations_stoptype ON stations(stopType)";
 
+        // Durable mirror of metadata/subscribed_stations (the active naptanIds).
+        // Read on cold start so the poller uses the last-known subscribed set
+        // immediately — never falling into NAP MODE and missing stations while
+        // the realtime listener warms up, and saving a Firestore read on redeploy.
+        String createSubscribedStations = "CREATE TABLE IF NOT EXISTS subscribed_stations (" +
+                "naptanId TEXT PRIMARY KEY" +
+                ")";
+
         try (Statement stmt = conn.createStatement()) {
             stmt.execute(createMetadata);
             stmt.execute(createLineStatuses);
             stmt.execute(createStations);
             stmt.execute(indexStopType);
+            stmt.execute(createSubscribedStations);
             log.info("SQLITE: ✅ Database tables verified/created successfully.");
         }
     }
@@ -120,7 +132,16 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
 
     @Override
     public void updateLastSyncTime(String collection, String time) {
-        String sql = "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES (?, ?)";
+        // ATOMIC + MONOTONIC in one statement — no read-before-write, so
+        // concurrent listener callbacks can never race the checkpoint backwards.
+        // We compare NUMERICALLY (CAST … AS INTEGER), matching the backend, so an
+        // epoch-millis checkpoint ("1748…") correctly overwrites a legacy ISO one
+        // ("2026…") — a lexical string compare would wrongly treat 1… < 2… and
+        // freeze the checkpoint at the old ISO value. (CAST("2026-..") → 2026,
+        // CAST("1748..") → 1748372…, so epoch > ISO numerically. ✓)
+        String sql = "INSERT INTO sync_metadata (key, value) VALUES (?, ?) "
+                   + "ON CONFLICT(key) DO UPDATE SET value = excluded.value "
+                   + "WHERE CAST(excluded.value AS INTEGER) > CAST(sync_metadata.value AS INTEGER)";
         try (Connection conn = getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             pstmt.setString(1, "last_sync_" + collection);
@@ -129,6 +150,52 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
         } catch (SQLException e) {
             log.error("SQLITE: ❌ Failed to update last sync time for {}", collection, e);
         }
+    }
+
+    @Override
+    public void replaceSubscribedStations(Set<String> naptanIds) {
+        // Atomic swap: clear + repopulate inside one transaction so a concurrent
+        // cold-start read never sees a half-populated set (i.e. never misses a
+        // subscribed station mid-write). On any failure we roll back and KEEP the
+        // previous set rather than risk wiping it.
+        try (Connection conn = getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                try (Statement del = conn.createStatement()) {
+                    del.executeUpdate("DELETE FROM subscribed_stations");
+                }
+                try (PreparedStatement ins = conn.prepareStatement(
+                        "INSERT OR IGNORE INTO subscribed_stations (naptanId) VALUES (?)")) {
+                    for (String id : naptanIds) {
+                        if (id == null || id.isEmpty()) continue;
+                        ins.setString(1, id);
+                        ins.addBatch();
+                    }
+                    ins.executeBatch();
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            }
+        } catch (SQLException e) {
+            log.error("SQLITE: ❌ Failed to replace subscribed_stations (kept previous set)", e);
+        }
+    }
+
+    @Override
+    public Set<String> getSubscribedStationIds() {
+        Set<String> ids = new HashSet<>();
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT naptanId FROM subscribed_stations")) {
+            while (rs.next()) {
+                ids.add(rs.getString("naptanId"));
+            }
+        } catch (SQLException e) {
+            log.error("SQLITE: ❌ Failed to read subscribed_stations", e);
+        }
+        return ids;
     }
 
     @Override
@@ -164,7 +231,7 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
             pstmt.setString(3, status.getMode());
             pstmt.setString(4, status.getStatusSeverityDescription());
             pstmt.setString(5, status.getReason());
-            pstmt.setString(6, status.getLastUpdatedTime());
+            pstmt.setString(6, String.valueOf(TimeUtils.toEpochMs(status.getLastUpdatedTime())));
             pstmt.executeUpdate();
         } catch (SQLException e) {
             log.error("SQLITE: ❌ Failed to upsert line status for {}", status.getId(), e);
@@ -230,7 +297,7 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
             pstmt.setString(6, station.getStopType());
             pstmt.setString(7, station.getIndicator());
             pstmt.setString(8, station.getStopLetter());
-            pstmt.setString(9, station.getLastUpdatedTime());
+            pstmt.setString(9, String.valueOf(TimeUtils.toEpochMs(station.getLastUpdatedTime())));
             pstmt.setString(10, station.getIcsCode());
             pstmt.setString(11, station.getTowards());
             pstmt.setString(12, station.getCompassPoint());
@@ -279,7 +346,7 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
                     pstmt.setString(6, station.getStopType());
                     pstmt.setString(7, station.getIndicator());
                     pstmt.setString(8, station.getStopLetter());
-                    pstmt.setString(9, station.getLastUpdatedTime());
+                    pstmt.setString(9, String.valueOf(TimeUtils.toEpochMs(station.getLastUpdatedTime())));
                     pstmt.setString(10, station.getIcsCode());
                     pstmt.setString(11, station.getTowards());
                     pstmt.setString(12, station.getCompassPoint());
