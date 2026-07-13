@@ -19,6 +19,9 @@ import java.util.stream.Collectors;
 public class DataTransformationService {
 
     private final ObjectMapper objectMapper;
+    private final RouteDirectionResolver routeDirectionResolver;
+
+    private static final String CHECK_FRONT_OF_TRAIN = "Check Front of Train";
 
     private String normalize(String input) {
         if (input == null)
@@ -52,6 +55,26 @@ public class DataTransformationService {
             String stationId = entry.getKey();
             List<ArrivalPrediction> stationArrivals = entry.getValue();
             String stationKey = "Station_" + normalize(stationId);
+
+            // Terminus rule (mirrors tfl.gov.uk and stationly-backend): a train
+            // whose destination is this very station is arriving to turn
+            // around. It IS a future departure, but its outbound destination is
+            // unknown until TfL assigns the return working at the platform — so
+            // relabel it "Check Front of Train" (never drop; keyed on the
+            // naptanId, not the name) and re-bucket it into the line's single
+            // departing direction, since the raw entry carries none.
+            stationArrivals.forEach(a -> {
+                if (a.getDestinationNaptanId() != null && a.getDestinationNaptanId().equals(stationId)) {
+                    a.setTowards(CHECK_FRONT_OF_TRAIN);
+                    a.setDestinationName(null);
+                    // "unknown" (not null) so FCM payloads carry the same destId
+                    // the backend REST path emits for unknown destinations.
+                    a.setDestinationNaptanId("unknown");
+                    if (a.getDirection() == null || a.getDirection().trim().isEmpty()) {
+                        a.setDirection(routeDirectionResolver.resolveDepartingDirection(stationId, a.getLineId()));
+                    }
+                }
+            });
 
             // Create StationPredictions
             StationPredictions station = StationPredictions.builder()
@@ -165,8 +188,11 @@ public class DataTransformationService {
     }
 
     private PredictionItem toPredictionItem(ArrivalPrediction arrival) {
-        String rawName = (arrival.getTowards() != null && !arrival.getTowards().isEmpty())
-                ? arrival.getTowards()
+        // iBus sends the literal string "null" in `towards` for buses while the
+        // real destination sits in destinationName — treat it as absent.
+        String towards = arrival.getTowards() != null ? arrival.getTowards().trim() : "";
+        String rawName = (!towards.isEmpty() && !towards.equalsIgnoreCase("null"))
+                ? towards
                 : arrival.getDestinationName();
 
         if (rawName != null) {

@@ -25,4 +25,11 @@ public interface LocalDatabaseService {
     void deleteStation(String naptanId);
     List<Station> getStationsBySearchKey(String searchKey);
     List<Station> getStationsExceptStopType(String stopTypeToExclude);
+
+    // Durable mirror of routes/{lineId}.directions — read on cold start so the
+    // terminus direction resolver works without any Firestore or TfL reads.
+    /** One transaction per Firestore snapshot — the cold-boot catch-up carries every doc. Rows: [lineId, directionsJson, lastUpdatedMs]. */
+    void upsertAllRouteDirections(java.util.List<Object[]> rows);
+    java.util.Map<String, String> getAllRouteDirections();
+    long getRouteDirectionsWatermark();
 }
