@@ -3,6 +3,7 @@ package com.stationly.backend.service;
 import com.stationly.backend.client.TflApi;
 import com.stationly.backend.model.LineStatusResponse;
 import com.stationly.backend.repository.DataRepository;
+import com.stationly.backend.status.SyncStatusRecorder;
 import com.stationly.backend.util.TflUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,12 +29,14 @@ class LineServiceTest {
     private NotificationService fcmService;
     @Mock
     private LocalDatabaseService localDatabaseService;
+    @Mock
+    private SyncStatusRecorder syncStatusRecorder;
 
     private LineService lineService;
 
     @BeforeEach
     void setUp() {
-        lineService = new LineService(tflApiClient, lineStatusRepository, fcmService, localDatabaseService, null);
+        lineService = new LineService(tflApiClient, lineStatusRepository, fcmService, localDatabaseService, null, syncStatusRecorder);
         ReflectionTestUtils.setField(lineService, "tflTransportModes", "tube,bus");
     }
 

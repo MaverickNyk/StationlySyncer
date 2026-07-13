@@ -3,6 +3,7 @@ package com.stationly.backend.service;
 import com.stationly.backend.client.TflApiClient;
 import com.stationly.backend.model.ArrivalPrediction;
 import com.stationly.backend.model.StationPredictions;
+import com.stationly.backend.status.SyncRunRecord;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,6 +28,7 @@ public class TflPollingService {
     private final ChangeDetectionService changeDetectionService;
     private final com.stationly.backend.sync.FirestoreDatabaseSyncer firestoreDatabaseSyncer;
     private final LocalDatabaseService localDatabaseService;
+    private final com.stationly.backend.status.SyncStatusRecorder syncStatusRecorder;
 
     @Value("${tfl.transport.modes}")
     private String tflTransportModes;
@@ -62,38 +64,101 @@ public class TflPollingService {
                 tflTransportModes.toUpperCase(), currentCycle, timestamp);
         log.info("╚═══════════════════════════════════════════════════════════════════");
 
-        final java.util.Set<String> activeStationsFilter = getActiveSubscribedStations();
+        boolean nap = false;
+        int activeCount = 0;
+        int modesProcessed = 0;
+        // Per-mode results gathered by the parallel refreshMode() calls, then logged
+        // once for the whole cycle. ConcurrentHashMap — written from worker threads.
+        final java.util.Map<String, java.util.Map<String, Object>> modeResults = new java.util.concurrent.ConcurrentHashMap<>();
 
-        if (isSubscribedStrategy) {
-            log.info("🎯 Strategy: SUBSCRIBED. Found {} active stations globally.", activeStationsFilter.size());
-            if (activeStationsFilter.isEmpty()) {
-                long duration = System.currentTimeMillis() - startMillis;
-                log.info("😴 NAP MODE: No active station subscriptions right now. Pausing TfL fetching entirely! | {}ms", duration);
-                return;
-            }
-        }
-
-        var executor = java.util.concurrent.Executors.newFixedThreadPool(activeModesArray.length + 2);
         try {
-            log.info("📋 Processing {} modes in parallel: {}", activeModesArray.length, Arrays.toString(activeModesArray));
-            List<CompletableFuture<Void>> futures = Arrays.stream(activeModesArray)
-                    .map(mode -> CompletableFuture.runAsync(() -> refreshMode(mode, activeStationsFilter), executor))
-                    .collect(Collectors.toList());
+            final java.util.Set<String> activeStationsFilter = getActiveSubscribedStations();
 
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            if (isSubscribedStrategy) {
+                activeCount = (activeStationsFilter != null) ? activeStationsFilter.size() : 0;
+                log.info("🎯 Strategy: SUBSCRIBED. Found {} active stations globally.", activeCount);
+                if (activeStationsFilter == null || activeStationsFilter.isEmpty()) {
+                    nap = true;
+                    long duration = System.currentTimeMillis() - startMillis;
+                    log.info("😴 NAP MODE: No active station subscriptions right now. Pausing TfL fetching entirely! | {}ms", duration);
+                    return; // the finally below still records the liveness beat
+                }
+            }
 
-            long totalDuration = System.currentTimeMillis() - startMillis;
-            log.info("╔═══════════════════════════════════════════════════════════════════");
-            log.info("║ ✅ TFL REFRESH COMPLETED | Total Time: {}ms | Modes: {}", totalDuration, activeModesArray.length);
-            log.info("╚═══════════════════════════════════════════════════════════════════");
+            var executor = java.util.concurrent.Executors.newFixedThreadPool(activeModesArray.length + 2);
+            try {
+                modesProcessed = activeModesArray.length;
+                log.info("📋 Processing {} modes in parallel: {}", activeModesArray.length, Arrays.toString(activeModesArray));
+                List<CompletableFuture<Void>> futures = Arrays.stream(activeModesArray)
+                        .map(mode -> CompletableFuture.runAsync(() -> refreshMode(mode, activeStationsFilter, modeResults), executor))
+                        .collect(Collectors.toList());
+
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+                long totalDuration = System.currentTimeMillis() - startMillis;
+                log.info("╔═══════════════════════════════════════════════════════════════════");
+                log.info("║ ✅ TFL REFRESH COMPLETED | Total Time: {}ms | Modes: {}", totalDuration, activeModesArray.length);
+                log.info("╚═══════════════════════════════════════════════════════════════════");
+            } finally {
+                executor.shutdown();
+            }
         } finally {
-            executor.shutdown();
+            // Always record the cycle — even NAP or mid-failure — so /health has a
+            // fresh liveness beat every ~30s. Persistence is async (never blocks here).
+            recordCycle(currentCycle, startMillis, nap, activeCount, modesProcessed, modeResults);
         }
     }
 
-    private void refreshMode(String mode, java.util.Set<String> activeStationsFilter) {
+    /** Build + enqueue the arrivals run record from the per-mode results. */
+    private void recordCycle(long cycle, long startMillis, boolean nap, int activeCount, int modesProcessed,
+                             java.util.Map<String, java.util.Map<String, Object>> modeResults) {
+        long finished = System.currentTimeMillis();
+        int totalArrivals = 0, totalGroups = 0, totalFcm = 0, errors = 0, okModes = 0;
+        for (java.util.Map<String, Object> r : modeResults.values()) {
+            totalArrivals += asInt(r.get("arrivals"));
+            totalGroups += asInt(r.get("stationGroups"));
+            totalFcm += asInt(r.get("fcmQueued"));
+            if (Boolean.TRUE.equals(r.get("ok"))) okModes++; else errors++;
+        }
+
+        String status;
+        if (nap) status = SyncRunRecord.NAP;
+        else if (modeResults.isEmpty() || errors == 0) status = SyncRunRecord.OK;
+        else if (okModes > 0) status = SyncRunRecord.PARTIAL;
+        else status = SyncRunRecord.FAILED;
+
+        java.util.Map<String, Object> detail = new java.util.HashMap<>();
+        detail.put("modes", modeResults);
+
+        syncStatusRecorder.record(SyncRunRecord.builder()
+                .jobType(SyncRunRecord.JOB_ARRIVALS)
+                .startedAt(startMillis)
+                .finishedAt(finished)
+                .durationMs(finished - startMillis)
+                .status(status)
+                .cycle((int) cycle)
+                .napMode(nap)
+                .activeSubscriptions(activeCount)
+                .modesProcessed(modesProcessed)
+                .arrivals(totalArrivals)
+                .stationGroups(totalGroups)
+                .fcmQueued(totalFcm)
+                .errors(errors)
+                .detail(detail)
+                .build());
+    }
+
+    private static int asInt(Object o) {
+        return (o instanceof Number) ? ((Number) o).intValue() : 0;
+    }
+
+    private void refreshMode(String mode, java.util.Set<String> activeStationsFilter,
+                             java.util.Map<String, java.util.Map<String, Object>> modeResults) {
         String timestamp = LocalDateTime.now().format(TIME_FORMATTER);
         long startMillis = System.currentTimeMillis();
+        int arrivalsCount = 0, groupCount = 0, fcmCount = 0;
+        boolean ok = true;
+        String error = null;
 
         log.info("┌───────────────────────────────────────────────────────────────────");
         log.info("│ 🚇 POLLING MODE: {} | Time: {}", mode.toUpperCase(), timestamp);
@@ -110,6 +175,7 @@ public class TflPollingService {
             }
 
             arrivals = filterArrivals(arrivals, activeStationsFilter, mode);
+            arrivalsCount = arrivals.size();
 
             if (arrivals.isEmpty()) {
                 return;
@@ -118,15 +184,16 @@ public class TflPollingService {
             log.info("🔄 [{}] Step 2: Transforming into station-centric groups...", mode);
             Map<String, StationPredictions> groupedStations = transformationService
                     .transformToStationGroups(arrivals);
-            log.info("✅ [{}] Step 2: {} station groups", mode, groupedStations.size());
+            groupCount = groupedStations.size();
+            log.info("✅ [{}] Step 2: {} station groups", mode, groupCount);
 
             log.info("⚡ [{}] Step 3: Change detection...", mode);
             Map<String, Object> fcmData = changeDetectionService.getChangedStations(mode, groupedStations);
             changeDetectionService.detectAndAddWipes(mode, arrivals.size(), groupedStations, fcmData);
 
-            int fcmCount = fcmData.size();
+            fcmCount = fcmData.size();
             if (fcmCount > 0) {
-                log.info("⚡ [{}] Step 3: {}/{} stations changed. Publishing...", mode, fcmCount, groupedStations.size());
+                log.info("⚡ [{}] Step 3: {}/{} stations changed. Publishing...", mode, fcmCount, groupCount);
                 fcmService.publishAll(fcmData);
                 log.info("✅ [{}] Step 3: Queued {} FCM messages", mode, fcmCount);
             } else {
@@ -135,11 +202,22 @@ public class TflPollingService {
 
             long duration = System.currentTimeMillis() - startMillis;
             log.info("│ ✅ [{}] {} arrivals → {} stations → {} FCM | {}ms",
-                    mode, arrivals.size(), groupedStations.size(), fcmCount, duration);
+                    mode, arrivalsCount, groupCount, fcmCount, duration);
 
         } catch (Exception e) {
+            ok = false;
+            error = e.getMessage();
             long duration = System.currentTimeMillis() - startMillis;
             log.error("❌ [{}] FAILED | Took: {}ms | Error: {}", mode, duration, e.getMessage());
+        } finally {
+            java.util.Map<String, Object> r = new java.util.LinkedHashMap<>();
+            r.put("ok", ok);
+            r.put("arrivals", arrivalsCount);
+            r.put("stationGroups", groupCount);
+            r.put("fcmQueued", fcmCount);
+            r.put("durationMs", System.currentTimeMillis() - startMillis);
+            if (error != null) r.put("error", error);
+            modeResults.put(mode, r);
         }
     }
 

@@ -7,6 +7,8 @@ import com.stationly.backend.model.LineStatusResponse;
 import com.stationly.backend.util.TimeUtils;
 import com.stationly.backend.repository.DataRepository;
 import com.stationly.backend.util.TflUtils;
+import com.stationly.backend.status.SyncRunRecord;
+import com.stationly.backend.status.SyncStatusRecorder;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +29,7 @@ public class LineService {
     private final NotificationService fcmService;
     private final LocalDatabaseService localDatabaseService;
     private final Firestore firestore;
+    private final SyncStatusRecorder syncStatusRecorder;
 
     @Value("${tfl.transport.modes}")
     private String tflTransportModes;
@@ -39,12 +42,14 @@ public class LineService {
                        DataRepository<LineStatusResponse, String> lineStatusRepository,
                        NotificationService fcmService,
                        LocalDatabaseService localDatabaseService,
-                       @Autowired(required = false) Firestore firestore) {
+                       @Autowired(required = false) Firestore firestore,
+                       SyncStatusRecorder syncStatusRecorder) {
         this.tflApiClient = tflApiClient;
         this.lineStatusRepository = lineStatusRepository;
         this.fcmService = fcmService;
         this.localDatabaseService = localDatabaseService;
         this.firestore = firestore;
+        this.syncStatusRecorder = syncStatusRecorder;
     }
 
     @PostConstruct
@@ -180,6 +185,8 @@ public class LineService {
         log.info("║ 🚇 LINE STATUS SYNC STARTED");
         log.info("╚═══════════════════════════════════════════════════════════════════");
 
+        long syncStart = System.currentTimeMillis();
+        int errorCount = 0;
         String[] modes = tflTransportModes.split(",");
         List<LineStatusResponse> allStatuses = new ArrayList<>();
         List<LineStatusResponse> toSave = new ArrayList<>();
@@ -270,6 +277,7 @@ public class LineService {
                                 trimmedMode, rawStatuses.size(), changedCount);
 
             } catch (Exception e) {
+                errorCount++;
                 log.error("   ❌ [{}] Error polling line statuses: {}", trimmedMode, e.getMessage());
             }
         }
@@ -303,6 +311,23 @@ public class LineService {
         log.info("║ ✅ LINE STATUS SYNC COMPLETED | Total: {} | Changed: {}",
                         allStatuses.size(), fcmUpdates.size());
         log.info("╚═══════════════════════════════════════════════════════════════════");
+
+        long syncFinished = System.currentTimeMillis();
+        String runStatus = (errorCount == 0)
+                ? SyncRunRecord.OK
+                : (allStatuses.isEmpty() ? SyncRunRecord.FAILED : SyncRunRecord.PARTIAL);
+        syncStatusRecorder.record(SyncRunRecord.builder()
+                .jobType(SyncRunRecord.JOB_LINE_STATUS)
+                .startedAt(syncStart)
+                .finishedAt(syncFinished)
+                .durationMs(syncFinished - syncStart)
+                .status(runStatus)
+                .totalLines(allStatuses.size())
+                .changed(fcmUpdates.size())
+                .fcmQueued(fcmUpdates.size())
+                .errors(errorCount)
+                .modesProcessed(modes.length)
+                .build());
 
         return allStatuses;
     }

@@ -111,6 +111,18 @@ Real-time monitoring from production logs shows a massive optimization compared 
 
 ---
 
+## 📊 Observability — Sync Status API
+
+Every sync run is logged (asynchronously, never blocking the sync) to SQLite and exposed over a small reactive HTTP API on `127.0.0.1:8081`, consumed by **stationly-admin** to show real Syncer health instead of inferring it from backend data:
+
+- `GET /health` — compact liveness (`200` up/degraded, `503` down); a NAP (no subscriptions) Syncer still beats every 30s and reads healthy.
+- `GET /sync-status` — overall status + latest run per job + last-1h/24h aggregates + fcm/writer/retention stats.
+- `GET /sync-status/runs` · `GET /sync-status/rollup` — recent raw per-cycle rows / historical hour-day aggregates.
+
+A retention sweep rolls aged rows into hourly→daily buckets and prunes them, so the 30s arrivals cadence can't grow the DB unbounded. Full reference (endpoints, config, retention model, nginx): **[docs/SYNC_STATUS_API.md](docs/SYNC_STATUS_API.md)**.
+
+---
+
 ## 🚀 Setup & Deployment
 
 ### 1. Configuration

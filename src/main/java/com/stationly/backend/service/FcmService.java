@@ -36,6 +36,14 @@ public class FcmService implements NotificationService {
     // data.
     private final ConcurrentHashMap<String, Message> pendingMessages = new ConcurrentHashMap<>();
 
+    // Lightweight send stats for the status API (/sync-status). Written on the FCM
+    // callback thread, read by SyncStatusService — atomic/volatile, no locking.
+    private final java.util.concurrent.atomic.AtomicLong totalSent = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong totalFailed = new java.util.concurrent.atomic.AtomicLong();
+    private volatile int lastBatchSent = 0;
+    private volatile int lastBatchFailed = 0;
+    private volatile long lastBatchAtMs = 0L;
+
     // Dedicated Pacer Thread
     private final Thread pacerThread;
     private final java.util.concurrent.ExecutorService callbackExecutor = Executors.newFixedThreadPool(4);
@@ -167,6 +175,11 @@ public class FcmService implements NotificationService {
             future.addListener(() -> {
                 try {
                     BatchResponse response = future.get();
+                    totalSent.addAndGet(response.getSuccessCount());
+                    totalFailed.addAndGet(response.getFailureCount());
+                    lastBatchSent = response.getSuccessCount();
+                    lastBatchFailed = response.getFailureCount();
+                    lastBatchAtMs = System.currentTimeMillis();
                     if (response.getFailureCount() > 0) {
                         log.warn("⚠️ [FCM] Batch completed with {} failures out of {}", response.getFailureCount(),
                                 batch.size());
@@ -212,6 +225,15 @@ public class FcmService implements NotificationService {
         log.info("📥 [FCM] Added {} messages to queue. Total pending: {}", added, pendingMessages.size());
     }
 
+
+    // ---- status getters (read by SyncStatusService for /sync-status) ----
+    public boolean isFcmEnabled() { return fcmEnabled; }
+    public int getPendingCount() { return pendingMessages.size(); }
+    public long getTotalSent() { return totalSent.get(); }
+    public long getTotalFailed() { return totalFailed.get(); }
+    public int getLastBatchSent() { return lastBatchSent; }
+    public int getLastBatchFailed() { return lastBatchFailed; }
+    public long getLastBatchAtMs() { return lastBatchAtMs; }
 
     private static class BoundedThreadManager extends com.google.firebase.ThreadManager {
         @Override

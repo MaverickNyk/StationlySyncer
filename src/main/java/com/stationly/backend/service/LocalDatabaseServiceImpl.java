@@ -57,7 +57,14 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
         } catch (ClassNotFoundException e) {
             log.error("SQLITE: JDBC Driver not found", e);
         }
-        return DriverManager.getConnection("jdbc:sqlite:" + dbPath);
+        // WAL + a busy-timeout so this app's several writers (line-status listener,
+        // station sync, subscribed-stations mirror, and the new sync-status logger)
+        // wait briefly for a lock instead of failing fast with SQLITE_BUSY. WAL is a
+        // persistent, file-level setting; the busy-timeout is per-connection.
+        org.sqlite.SQLiteConfig cfg = new org.sqlite.SQLiteConfig();
+        cfg.setBusyTimeout(5000);
+        cfg.setJournalMode(org.sqlite.SQLiteConfig.JournalMode.WAL);
+        return DriverManager.getConnection("jdbc:sqlite:" + dbPath, cfg.toProperties());
     }
 
     private void createTables(Connection conn) throws SQLException {
