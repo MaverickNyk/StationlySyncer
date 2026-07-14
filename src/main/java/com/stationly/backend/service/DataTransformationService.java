@@ -109,6 +109,7 @@ public class DataTransformationService {
                 byDirection.forEach((direction, directionArrivals) -> {
                     List<PredictionItem> items = directionArrivals.stream()
                             .filter(a -> !isFarFutureUnassigned(a))
+                            .filter(a -> !isLongDeparted(a))
                             .map(this::toPredictionItem)
                             .sorted(Comparator.comparing(PredictionItem::getExpectedArrival,
                                     Comparator.nullsLast(Comparator.naturalOrder())))
@@ -218,6 +219,19 @@ public class DataTransformationService {
     private static final long UNASSIGNED_PLATFORM_MAX_MINUTES = 20;
 
     private static final Set<String> UNASSIGNED_RAW_VALUES = Set.of("null", "unknown", "platform unknown", "no platform");
+
+    // TfL's expectedArrival is computed from a prediction snapshot that can lag
+    // ~40-60s behind real time, so an approaching train routinely shows an
+    // expectedArrival slightly in the past while its timeToStation is still
+    // positive. 2 minutes is safely beyond that skew: anything older is a
+    // genuinely departed train TfL hasn't expired yet, not a live one.
+    // Must stay in lockstep with stationly-backend's stationController.ts.
+    private static final Duration DEPARTED_CUTOFF = Duration.ofMinutes(2);
+
+    private boolean isLongDeparted(ArrivalPrediction arrival) {
+        ZonedDateTime eta = arrival.getExpectedArrival();
+        return eta != null && Duration.between(eta, ZonedDateTime.now()).compareTo(DEPARTED_CUTOFF) > 0;
+    }
 
     private boolean isFarFutureUnassigned(ArrivalPrediction arrival) {
         String mode = arrival.getModeName();
