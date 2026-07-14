@@ -40,6 +40,7 @@ STATIONLY_FRONTEND_ARCHITECTURE.md
 graphify-out/
 
 local_scripts/staging_*.sh
+screenshots/
 
 # Local data / SQLite database
 data/

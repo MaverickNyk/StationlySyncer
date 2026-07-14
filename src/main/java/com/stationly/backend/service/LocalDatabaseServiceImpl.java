@@ -103,12 +103,22 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
                 "naptanId TEXT PRIMARY KEY" +
                 ")";
 
+        // Durable mirror of routes/{lineId}.directions (Firestore) — cold-start
+        // source for RouteDirectionResolver so terminus re-bucketing works
+        // without any Firestore or TfL reads on boot.
+        String createRouteDirections = "CREATE TABLE IF NOT EXISTS route_directions (" +
+                "lineId TEXT PRIMARY KEY, " +
+                "directions_json TEXT, " +
+                "lastUpdatedTime INTEGER" +
+                ")";
+
         try (Statement stmt = conn.createStatement()) {
             stmt.execute(createMetadata);
             stmt.execute(createLineStatuses);
             stmt.execute(createStations);
             stmt.execute(indexStopType);
             stmt.execute(createSubscribedStations);
+            stmt.execute(createRouteDirections);
             log.info("SQLITE: ✅ Database tables verified/created successfully.");
         }
     }
@@ -452,5 +462,66 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
                 .modes(modes)
                 .searchKeys(searchKeys)
                 .build();
+    }
+
+    // Route-direction mirror (routes/{lineId}.directions from Firestore)
+
+    @Override
+    public void upsertAllRouteDirections(List<Object[]> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        String sql = "INSERT OR REPLACE INTO route_directions (lineId, directions_json, lastUpdatedTime) VALUES (?, ?, ?)";
+        try (Connection conn = getConnection()) {
+            boolean autoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                for (Object[] row : rows) {
+                    pstmt.setString(1, (String) row[0]);
+                    pstmt.setString(2, (String) row[1]);
+                    pstmt.setLong(3, (Long) row[2]);
+                    pstmt.addBatch();
+                }
+                pstmt.executeBatch();
+                conn.commit();
+                log.info("SQLITE: ✅ Saved {} route directions in a batch transaction.", rows.size());
+            } catch (Exception e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(autoCommit);
+            }
+        } catch (Exception e) {
+            log.error("SQLITE: ❌ Failed to batch-save route directions", e);
+        }
+    }
+
+    @Override
+    public Map<String, String> getAllRouteDirections() {
+        Map<String, String> results = new HashMap<>();
+        String sql = "SELECT lineId, directions_json FROM route_directions";
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                results.put(rs.getString("lineId"), rs.getString("directions_json"));
+            }
+        } catch (SQLException e) {
+            log.error("SQLITE: ❌ Failed to retrieve route directions", e);
+        }
+        return results;
+    }
+
+    @Override
+    public long getRouteDirectionsWatermark() {
+        String sql = "SELECT COALESCE(MAX(lastUpdatedTime), 0) FROM route_directions";
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            if (rs.next()) return rs.getLong(1);
+        } catch (SQLException e) {
+            log.error("SQLITE: ❌ Failed to read route directions watermark", e);
+        }
+        return 0L;
     }
 }
