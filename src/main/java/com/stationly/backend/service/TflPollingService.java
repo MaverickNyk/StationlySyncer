@@ -27,6 +27,7 @@ public class TflPollingService {
     private final ChangeDetectionService changeDetectionService;
     private final com.stationly.backend.sync.FirestoreDatabaseSyncer firestoreDatabaseSyncer;
     private final LocalDatabaseService localDatabaseService;
+    private final ArrivalDeparturesFetchService arrivalDeparturesFetchService;
 
     @Value("${tfl.transport.modes}")
     private String tflTransportModes;
@@ -100,10 +101,18 @@ public class TflPollingService {
         log.info("└───────────────────────────────────────────────────────────────────");
 
         try {
+            // Departure-board calls (subscribed ∩ XR/OG stations) depend only
+            // on local metadata — start them FIRST so they overlap the bulk
+            // arrivals round-trip instead of stacking after it.
+            var arrivalDeparturesPlan = arrivalDeparturesFetchService.planForMode(mode, activeStationsFilter);
+
             log.info("📡 [{}] Step 1: Fetching arrivals from TfL API...", mode);
             List<ArrivalPrediction> arrivals = tflApiClient.getArrivalsByMode(mode);
+            if (arrivals == null) {
+                arrivals = List.of();
+            }
 
-            if (arrivals == null || arrivals.isEmpty()) {
+            if (arrivals.isEmpty() && arrivalDeparturesPlan.isEmpty()) {
                 long duration = System.currentTimeMillis() - startMillis;
                 log.warn("⚠️  [{}] NO DATA | No arrivals received | Took: {}ms", mode, duration);
                 return;
@@ -111,13 +120,17 @@ public class TflPollingService {
 
             arrivals = filterArrivals(arrivals, activeStationsFilter, mode);
 
-            if (arrivals.isEmpty()) {
+            // Board-planned stations proceed even with zero subscribed
+            // arrivals (quiet-hour terminus still gets its real timetable).
+            if (arrivals.isEmpty() && arrivalDeparturesPlan.isEmpty()) {
                 return;
             }
 
+            var arrivalDeparturesData = arrivalDeparturesPlan.await();
+
             log.info("🔄 [{}] Step 2: Transforming into station-centric groups...", mode);
             Map<String, StationPredictions> groupedStations = transformationService
-                    .transformToStationGroups(arrivals);
+                    .transformToStationGroups(arrivals, arrivalDeparturesData);
             log.info("✅ [{}] Step 2: {} station groups", mode, groupedStations.size());
 
             log.info("⚡ [{}] Step 3: Change detection...", mode);

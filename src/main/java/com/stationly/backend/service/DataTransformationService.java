@@ -1,6 +1,10 @@
 package com.stationly.backend.service;
 
 import com.stationly.backend.model.*;
+import com.stationly.backend.service.predictionsources.ArrivalDeparturesData;
+import com.stationly.backend.service.predictionsources.PredictionSource;
+import com.stationly.backend.service.predictionsources.PredictionSourceFactory;
+import com.stationly.backend.service.predictionsources.StationPredictionContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -19,9 +23,7 @@ import java.util.stream.Collectors;
 public class DataTransformationService {
 
     private final ObjectMapper objectMapper;
-    private final RouteDirectionResolver routeDirectionResolver;
-
-    private static final String CHECK_FRONT_OF_TRAIN = "Check Front of Train";
+    private final PredictionSourceFactory predictionSourceFactory;
 
     private String normalize(String input) {
         if (input == null)
@@ -39,6 +41,17 @@ public class DataTransformationService {
       *         value
       */
     public Map<String, StationPredictions> transformToStationGroups(List<ArrivalPrediction> arrivals) {
+        return transformToStationGroups(arrivals, ArrivalDeparturesData.empty());
+    }
+
+    /**
+     * @param arrivalDeparturesData resolved departure-board responses for the stations
+     *                  planned this cycle (empty for modes without a board
+     *                  product). Board-planned stations are processed even
+     *                  with zero live arrivals, so a subscribed terminus at a
+     *                  quiet hour still gets its real timetable pushed.
+     */
+    public Map<String, StationPredictions> transformToStationGroups(List<ArrivalPrediction> arrivals, ArrivalDeparturesData arrivalDeparturesData) {
         log.info("🔄 [TRANSFORM] Starting transformation of {} arrivals", arrivals.size());
         Map<String, StationPredictions> stationGroups = new java.util.concurrent.ConcurrentHashMap<>();
         String now = LocalDateTime.now().format(DateTimeFormatter.ISO_DATE_TIME);
@@ -48,89 +61,70 @@ public class DataTransformationService {
                 .filter(a -> a.getNaptanId() != null)
                 .collect(Collectors.groupingBy(ArrivalPrediction::getNaptanId));
 
-        log.info("🔄 [TRANSFORM] Grouped into {} stations", byStation.size());
+        Set<String> stationIds = new LinkedHashSet<>(byStation.keySet());
+        stationIds.addAll(arrivalDeparturesData.stationIds());
 
+        log.info("🔄 [TRANSFORM] Grouped into {} stations", stationIds.size());
+
+        int arrivalDeparturesRouted = 0;
         // Process each station sequentially to avoid thread exhaustion
-        byStation.entrySet().forEach(entry -> {
-            String stationId = entry.getKey();
-            List<ArrivalPrediction> stationArrivals = entry.getValue();
+        for (String stationId : stationIds) {
+            List<ArrivalPrediction> stationArrivals = byStation.getOrDefault(stationId, List.of());
             String stationKey = "Station_" + normalize(stationId);
 
-            // Terminus rule (mirrors tfl.gov.uk and stationly-backend): a train
-            // whose destination is this very station is arriving to turn
-            // around. It IS a future departure, but its outbound destination is
-            // unknown until TfL assigns the return working at the platform — so
-            // relabel it "Check Front of Train" (never drop; keyed on the
-            // naptanId, not the name) and re-bucket it into the line's single
-            // departing direction, since the raw entry carries none.
-            stationArrivals.forEach(a -> {
-                if (a.getDestinationNaptanId() != null && a.getDestinationNaptanId().equals(stationId)) {
-                    a.setTowards(CHECK_FRONT_OF_TRAIN);
-                    a.setDestinationName(null);
-                    // "unknown" (not null) so FCM payloads carry the same destId
-                    // the backend REST path emits for unknown destinations.
-                    a.setDestinationNaptanId("unknown");
-                    if (a.getDirection() == null || a.getDirection().trim().isEmpty()) {
-                        a.setDirection(routeDirectionResolver.resolveDepartingDirection(stationId, a.getLineId()));
-                    }
-                }
-            });
-
-            // Create StationPredictions
-            StationPredictions station = StationPredictions.builder()
+            ArrivalDeparturesData.StationData board = arrivalDeparturesData.forStation(stationId);
+            StationPredictionContext ctx = StationPredictionContext.builder()
                     .stationId(stationId)
-                    .stationName(stationArrivals.get(0).getStationName())
-                    .lastUpdatedTime(now)
-                    .lines(new HashMap<>())
+                    .arrivals(stationArrivals)
+                    .arrivalDeparturesByLine(board != null ? board.entriesByLine() : Map.of())
+                    .arrivalDeparturesLineNames(board != null ? board.lineNames() : Map.of())
+                    .arrivalDeparturesMode(board != null ? board.mode() : null)
+                    .stationCommonName(board != null ? board.commonName() : null)
+                    .helpers(this)
                     .build();
 
-            // Group arrivals by LineId
-            Map<String, List<ArrivalPrediction>> byLine = stationArrivals.stream()
-                    .filter(a -> a.getLineId() != null)
-                    .collect(Collectors.groupingBy(ArrivalPrediction::getLineId));
+            // ONE source per station per cycle — mirror of stationly-backend's
+            // PredictionSourceFactory routing.
+            PredictionSource source = predictionSourceFactory.forStation(ctx);
+            Map<String, LineData> lines = source.buildLines(ctx);
+            if (!"tube-dlr-bus-tram-mix".equals(source.name())) {
+                arrivalDeparturesRouted++;
+                log.info("SYNC: 🔀 {} → {}", stationId, source.name());
+            }
 
-            byLine.forEach((lineId, lineArrivals) -> {
-                LineData lineData = station.getLines().computeIfAbsent(lineId, k -> LineData.builder()
-                        .lineId(lineId)
-                        .lineName(lineArrivals.get(0).getLineName())
-                        .directions(new HashMap<>())
-                        .build());
+            // A board-only station with nothing usable publishes nothing; a
+            // station WITH arrivals always publishes, exactly as before —
+            // even when every prediction was filtered out.
+            if (stationArrivals.isEmpty() && lines.isEmpty()) {
+                continue;
+            }
 
-                Map<String, List<ArrivalPrediction>> byDirection = lineArrivals.stream()
-                        .collect(Collectors.groupingBy(a -> {
-                            String dir = a.getDirection();
-                            if (dir == null || dir.trim().isEmpty()) {
-                                String plat = a.getPlatformName() != null ? a.getPlatformName().toLowerCase() : "";
-                                return plat.contains("inbound") ? "inbound" : "outbound";
-                            }
-                            return dir.toLowerCase();
-                        }));
+            String stationName = !stationArrivals.isEmpty()
+                    ? stationArrivals.get(0).getStationName()
+                    : (ctx.getStationCommonName() != null ? ctx.getStationCommonName() : stationId);
 
-                byDirection.forEach((direction, directionArrivals) -> {
-                    List<PredictionItem> items = directionArrivals.stream()
-                            .filter(a -> !isFarFutureUnassigned(a))
-                            .filter(a -> !isLongDeparted(a))
-                            .map(this::toPredictionItem)
-                            .sorted(Comparator.comparing(PredictionItem::getExpectedArrival,
-                                    Comparator.nullsLast(Comparator.naturalOrder())))
-                            .limit(10) // Higher initial limit, pruning will handle safety
-                            .collect(Collectors.toList());
-
-                    if (!items.isEmpty()) {
-                        DirectionPredictions directionPredictions = DirectionPredictions.builder()
-                                .predictions(items)
-                                .build();
-                        lineData.getDirections().put(direction, directionPredictions);
-                    }
-                });
-            });
+            StationPredictions station = StationPredictions.builder()
+                    .stationId(stationId)
+                    .stationName(stationName)
+                    .lastUpdatedTime(now)
+                    .lines(lines)
+                    .build();
 
             // Dynamic Pruning to fit FCM 4KB limit
             pruneToFitFCM(station);
+            if (log.isDebugEnabled() && !"tube-dlr-bus-tram-mix".equals(source.name())) {
+                // Validation aid: the exact FCM payload for ArrivalDepartures-
+                // served stations (enable via logging.level.com.stationly=DEBUG).
+                try {
+                    log.debug("SYNC: 📦 {} payload: {}", stationId, objectMapper.writeValueAsString(station));
+                } catch (Exception ignored) {
+                }
+            }
             stationGroups.put(stationKey, station);
-        });
+        }
 
-        log.info("✅ [TRANSFORM] Completed: {} arrivals → {} station groups", arrivals.size(), stationGroups.size());
+        log.info("✅ [TRANSFORM] Completed: {} arrivals → {} station groups{}", arrivals.size(), stationGroups.size(),
+                arrivalDeparturesRouted > 0 ? " (" + arrivalDeparturesRouted + " via arrival-departures)" : "");
         return stationGroups;
     }
 
@@ -188,7 +182,22 @@ public class DataTransformationService {
         }
     }
 
-    private PredictionItem toPredictionItem(ArrivalPrediction arrival) {
+    /**
+     * Strip TfL's station-name suffixes for display. Shared by every
+     * prediction source so the same destination never renders two different
+     * ways depending on which TfL product it came from.
+     */
+    public String cleanDestinationName(String rawName) {
+        if (rawName == null) {
+            return null;
+        }
+        return rawName.replace(" Underground Station", "")
+                .replace(" Station", "")
+                .replace(" DLR", "")
+                .trim();
+    }
+
+    public PredictionItem toPredictionItem(ArrivalPrediction arrival) {
         // iBus sends the literal string "null" in `towards` for buses while the
         // real destination sits in destinationName — treat it as absent.
         String towards = arrival.getTowards() != null ? arrival.getTowards().trim() : "";
@@ -196,12 +205,7 @@ public class DataTransformationService {
                 ? towards
                 : arrival.getDestinationName();
 
-        if (rawName != null) {
-            rawName = rawName.replace(" Underground Station", "")
-                    .replace(" Station", "")
-                    .replace(" DLR", "")
-                    .trim();
-        }
+        rawName = cleanDestinationName(rawName);
 
         return PredictionItem.builder()
                 .destinationNaptanId(arrival.getDestinationNaptanId())
@@ -216,29 +220,33 @@ public class DataTransformationService {
     // TfL only assigns platforms ~5–15 min before departure for these modes;
     // far-future unplatformed predictions from them are noise, not real board data.
     private static final Set<String> LATE_PLATFORM_MODES = Set.of("overground", "dlr", "elizabeth-line");
-    private static final long UNASSIGNED_PLATFORM_MAX_MINUTES = 20;
+    public static final long UNASSIGNED_PLATFORM_MAX_MINUTES = 20;
 
     private static final Set<String> UNASSIGNED_RAW_VALUES = Set.of("null", "unknown", "platform unknown", "no platform");
+
+    /** TfL placeholder strings meaning "no platform assigned yet" (raw value, not the presentable label). */
+    public static boolean isUnassignedPlatform(String rawPlatform) {
+        String rp = rawPlatform == null ? "" : rawPlatform.trim().toLowerCase();
+        return rp.isEmpty() || UNASSIGNED_RAW_VALUES.contains(rp);
+    }
 
     // TfL's expectedArrival is computed from a prediction snapshot that can lag
     // ~40-60s behind real time, so an approaching train routinely shows an
     // expectedArrival slightly in the past while its timeToStation is still
     // positive. 2 minutes is safely beyond that skew: anything older is a
     // genuinely departed train TfL hasn't expired yet, not a live one.
-    // Must stay in lockstep with stationly-backend's stationController.ts.
-    private static final Duration DEPARTED_CUTOFF = Duration.ofMinutes(2);
+    // Must stay in lockstep with stationly-backend's predictionUtils.ts.
+    public static final Duration DEPARTED_CUTOFF = Duration.ofMinutes(2);
 
-    private boolean isLongDeparted(ArrivalPrediction arrival) {
+    public boolean isLongDeparted(ArrivalPrediction arrival) {
         ZonedDateTime eta = arrival.getExpectedArrival();
         return eta != null && Duration.between(eta, ZonedDateTime.now()).compareTo(DEPARTED_CUTOFF) > 0;
     }
 
-    private boolean isFarFutureUnassigned(ArrivalPrediction arrival) {
+    public boolean isFarFutureUnassigned(ArrivalPrediction arrival) {
         String mode = arrival.getModeName();
         if (mode == null || !LATE_PLATFORM_MODES.contains(mode.toLowerCase())) return false;
-        String p = arrival.getPlatformName();
-        String rp = p == null ? "" : p.trim().toLowerCase();
-        if (!rp.isEmpty() && !UNASSIGNED_RAW_VALUES.contains(rp)) return false;
+        if (!isUnassignedPlatform(arrival.getPlatformName())) return false;
         if (arrival.getExpectedArrival() == null) return true;
         return Duration.between(ZonedDateTime.now(), arrival.getExpectedArrival()).toMinutes() > UNASSIGNED_PLATFORM_MAX_MINUTES;
     }
@@ -246,8 +254,7 @@ public class DataTransformationService {
     public String getPresentablePlatform(String mode, String rawPlatform) {
         boolean isBus = "bus".equalsIgnoreCase(mode);
 
-        String rp = rawPlatform == null ? "" : rawPlatform.trim().toLowerCase();
-        if (rp.isEmpty() || rp.equals("null") || rp.equals("unknown") || rp.equals("platform unknown") || rp.equals("no platform")) {
+        if (isUnassignedPlatform(rawPlatform)) {
             // Unassigned bus stop → empty (client renders just the line, no
             // confusing "Stop not assigned"). Rail keeps a presentable label.
             // Must stay in lockstep with stationly-backend formatters.ts.
