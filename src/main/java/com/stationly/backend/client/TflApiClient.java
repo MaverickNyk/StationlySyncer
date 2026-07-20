@@ -1,6 +1,8 @@
 package com.stationly.backend.client;
 
+import com.stationly.backend.model.ArrivalDeparture;
 import com.stationly.backend.model.ArrivalPrediction;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -8,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 @Component
+@Slf4j
 public class TflApiClient implements TflApi {
 
         private final WebClient webClient;
@@ -49,6 +52,29 @@ public class TflApiClient implements TflApi {
         }
 
 
+
+        public List<ArrivalDeparture> getArrivalDepartures(String naptanId, String lineId) {
+                // Unlike the bulk arrivals call this IS rate-limited: up to
+                // tfl.arrival-departures.max-calls-per-cycle of these fire per cycle.
+                rateLimiter.acquire();
+                try {
+                        return webClient.get()
+                                        .uri(uriBuilder -> uriBuilder
+                                                        .path("/StopPoint/{naptanId}/ArrivalDepartures")
+                                                        .queryParam("lineIds", lineId)
+                                                        .queryParam("app_key", appKey)
+                                                        .build(naptanId))
+                                        .retrieve()
+                                        .bodyToFlux(ArrivalDeparture.class)
+                                        .timeout(java.time.Duration.ofSeconds(apiTimeout))
+                                        .collectList()
+                                        .block();
+                } catch (Exception e) {
+                        // Non-fatal: the line falls back to countdown arrivals.
+                        log.warn("⚠️ [TFL] ArrivalDepartures failed for {} ({}): {}", naptanId, lineId, e.getMessage());
+                        return List.of();
+                }
+        }
 
         public List<Map<String, Object>> getLinesByMode(String mode) {
                 rateLimiter.acquire();
