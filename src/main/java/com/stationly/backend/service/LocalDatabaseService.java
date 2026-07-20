@@ -24,6 +24,8 @@ public interface LocalDatabaseService {
     void saveAllStations(List<Station> stations);
     void deleteStation(String naptanId);
     List<Station> getStationsBySearchKey(String searchKey);
+    /** Stations whose modes map contains the given mode key (e.g. "elizabeth-line"). */
+    List<Station> getStationsByMode(String mode);
     List<Station> getStationsExceptStopType(String stopTypeToExclude);
 
     // Durable mirror of routes/{lineId}.directions — read on cold start so the
