@@ -410,6 +410,24 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
     }
 
     @Override
+    public List<Station> getStationsByMode(String mode) {
+        List<Station> results = new ArrayList<>();
+        String sql = "SELECT * FROM stations WHERE EXISTS (SELECT 1 FROM json_each(modes_json) WHERE json_each.key = ?)";
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, mode);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    results.add(mapResultSetToStation(rs));
+                }
+            }
+        } catch (SQLException e) {
+            log.error("SQLITE: ❌ Failed to get stations by mode {}", mode, e);
+        }
+        return results;
+    }
+
+    @Override
     public List<Station> getStationsExceptStopType(String stopTypeToExclude) {
         List<Station> results = new ArrayList<>();
         String sql = "SELECT * FROM stations WHERE stopType IS NULL OR stopType != ?";
