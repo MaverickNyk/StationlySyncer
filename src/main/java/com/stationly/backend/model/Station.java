@@ -33,6 +33,10 @@ public class Station {
     private String towards;
     private String compassPoint;
     private String stationNaptan;
+    // National Rail CRS code (e.g. "PAD") — present only for stations Darwin
+    // serves; captured from TfL StopPoint additionalProperties during sync.
+    // naptanId remains the sole cross-module station key; this is metadata.
+    private String crs;
 
     // Map of modes serving this station: ModeName -> ModeGroup
     @Builder.Default

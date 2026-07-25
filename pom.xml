@@ -80,6 +80,13 @@
 			<artifactId>sqlite-jdbc</artifactId>
 			<version>3.45.3.0</version>
 		</dependency>
+
+		<!-- National Rail (Darwin): RDM delivers the Real Time feed over Kafka
+		     (SASL, JSON). Consumed by nationalrail.client.DarwinPushPortClient. -->
+		<dependency>
+			<groupId>org.springframework.kafka</groupId>
+			<artifactId>spring-kafka</artifactId>
+		</dependency>
 	</dependencies>
 
 	<build>
