@@ -2,7 +2,7 @@
 
 **Status: deployed to staging and verified end-to-end (2026-07-31). Not committed.**
 
-The Syncer now dispatches change-detected station predictions to the Node backend, which fans them out over WebSocket to app clients with a board on screen.
+The Syncer now dispatches change-detected station predictions **and line statuses** to the Node backend, which fans them out over WebSocket to app clients with a board on screen.
 
 Full picture (protocol, cache, nginx, security) lives in
 `stationly-backend/docs/LIVE_STREAM_HANDOVER.md`. This file covers only what changed here.
@@ -13,8 +13,10 @@ Full picture (protocol, cache, nginx, security) lives in
 
 | File | Change |
 |---|---|
-| `service/LiveStreamPublisher.java` | **New.** Debounced queue + daemon pacer, POSTs to the backend |
+| `service/LiveStreamPublisher.java` | **New.** Debounced queue + daemon pacer, POSTs to the backend. Now carries **two** channels — stations and line statuses — on separate queues to separate endpoints |
 | `service/TflPollingService.java` | One field + one call after `fcmService.publishAll(fcmData)` |
+| `service/LineService.java` | **Firestore + SQLite removed entirely** (see below). Now pushes changed statuses to the backend, and suppresses FCM on the first sync after boot |
+| `config/RepositoryConfig.java` | `lineStatusRepository` bean deleted — nothing persists statuses any more |
 | `resources/application.properties` | New `livestream.*` block |
 | `resources/application-remote.properties` | `livestream.ingest-secret=` (**must stay blank** — see below) |
 
@@ -24,6 +26,44 @@ liveStreamPublisher.publishAll(fcmData); // new — same map, second consumer
 ```
 
 Both consume the **same** `ChangeDetectionService` output, so the stream updates on exactly the cadence FCM does, with no extra TfL work and no second change-detection pass.
+
+---
+
+## Line status: zero Firestore, zero SQLite
+
+Line statuses used to be written to Firestore (`lineStatusRepository.saveAll`) and mirrored to SQLite, with a boot delta-sync and a live `onSnapshot` listener reading them back. All of that is gone on both sides.
+
+**Why the listener could go:** it existed to pick up statuses written by the *Node backend's* tier-4 TfL refresh. That write was removed, leaving the listener reading back only this service's own writes — a Firestore document read per change, forever, for no data.
+
+The flow is now:
+
+```
+@Scheduled → TfL fetch → change-detect (unchanged)
+                            ├──► fcmService.publishAll()            (unchanged)
+                            └──► liveStreamPublisher.publishLineStatuses()
+                                     │  POST /internal/line-status-updates
+                                     ▼
+                            backend DataCacheService.setLineStatus()
+                                     ├──► in-memory Map (the only store)
+                                     └──► WebSocket subscribers
+```
+
+`lineStatusesCache` is now the **only** store and therefore the only change-detection baseline.
+
+### The `primed` flag — do not remove it
+
+With nothing persisted, the baseline starts empty, so the first poll after **every restart and every deploy** marks all ~30 lines as changed. Left alone that pushes a "status changed" notification to every subscribed user for changes that never happened.
+
+`primed` suppresses **FCM only** on the first sync. Two details that are easy to get wrong:
+
+1. The **stream push is deliberately not suppressed** — the backend's cache is empty at that moment and needs current state, and a stream update only refreshes what a client already displays rather than interrupting anyone.
+2. It is set **only when `allStatuses` is non-empty**. If TfL was unreachable for every mode, the cache is still cold; flipping the flag would let the next healthy sync fire the exact storm it exists to prevent. Both are covered by tests in `LineServiceTest`.
+
+### This dispatch is now load-bearing
+
+For stations, the POST is a second path alongside FCM. For line statuses it is the **only** live path to the backend. If it breaks, the backend falls back to polling TfL itself once per mode per 60s — so nothing looks broken while clients sit up to a minute stale.
+
+Watch `lines.writes.syncer` at the backend's `GET /internal/stream-stats`. A flat counter there is the only signal that this dispatch has stopped.
 
 ---
 
