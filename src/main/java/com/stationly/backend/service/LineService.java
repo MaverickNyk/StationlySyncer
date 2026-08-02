@@ -1,11 +1,9 @@
 package com.stationly.backend.service;
 
-import com.google.cloud.firestore.*;
-import com.google.api.core.ApiFuture;
+// No Firestore imports: line statuses are memory-only. See syncLineStatuses.
 import com.stationly.backend.client.TflApi;
 import com.stationly.backend.model.LineStatusResponse;
 import com.stationly.backend.util.TimeUtils;
-import com.stationly.backend.repository.DataRepository;
 import com.stationly.backend.util.TflUtils;
 
 import lombok.extern.slf4j.Slf4j;
@@ -13,8 +11,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -23,158 +19,52 @@ import java.util.concurrent.ConcurrentHashMap;
 public class LineService {
 
     private final TflApi tflApiClient;
-    private final DataRepository<LineStatusResponse, String> lineStatusRepository;
     private final NotificationService fcmService;
-    private final LocalDatabaseService localDatabaseService;
-    private final Firestore firestore;
+    /**
+     * Injected by CONCRETE type, not via NotificationService. LiveStreamPublisher
+     * deliberately does not implement that interface — a second implementation
+     * would break fcmService's by-type injection with
+     * NoUniqueBeanDefinitionException.
+     */
+    private final LiveStreamPublisher liveStreamPublisher;
 
     @Value("${tfl.transport.modes}")
     private String tflTransportModes;
 
+    /**
+     * THE store for line statuses. Nothing is persisted any more — Firestore and
+     * SQLite were both removed once the backend stopped reading them, leaving
+     * the Syncer as the only reader of its own writes.
+     *
+     * Consequence: this is also the only change-detection baseline, so a cold
+     * start sees every line as new. See {@link #primed}.
+     */
     private final Map<String, LineStatusResponse> lineStatusesCache = new ConcurrentHashMap<>();
-    private ListenerRegistration listenerRegistration;
+
+    /**
+     * False until the first sync completes. Guards the FCM push ONLY: with no
+     * persisted baseline, the first poll after every restart or deploy marks all
+     * ~30 lines as changed, which would notify every subscribed user that
+     * nothing happened. The stream push is not suppressed — it is idempotent and
+     * the backend needs current state.
+     */
+    private volatile boolean primed = false;
 
     @Autowired
     public LineService(TflApi tflApiClient,
-                       DataRepository<LineStatusResponse, String> lineStatusRepository,
                        NotificationService fcmService,
-                       LocalDatabaseService localDatabaseService,
-                       @Autowired(required = false) Firestore firestore) {
+                       LiveStreamPublisher liveStreamPublisher) {
         this.tflApiClient = tflApiClient;
-        this.lineStatusRepository = lineStatusRepository;
         this.fcmService = fcmService;
-        this.localDatabaseService = localDatabaseService;
-        this.firestore = firestore;
+        this.liveStreamPublisher = liveStreamPublisher;
     }
 
-    @PostConstruct
-    public void init() {
-        log.info("CACHE: 📡 Initializing LineStatus cache...");
+    // init()/cleanup() removed with the Firestore delta sync and onSnapshot
+    // listener. Both existed to pick up line statuses written by the Node
+    // backend's tier-4 refresh; that write is gone, so the listener was reading
+    // back only this service's own writes — pure Firestore cost for no data.
+    // The cache now warms on the first scheduled poll (see `primed`).
 
-        // 1. Load from local database
-        try {
-            List<LineStatusResponse> localList = localDatabaseService.getAllLineStatuses();
-            for (LineStatusResponse status : localList) {
-                if (status != null && status.getId() != null) {
-                    lineStatusesCache.put(status.getId(), status);
-                }
-            }
-            log.info("CACHE: 📁 Load from SQLite success. Line Statuses: {}", lineStatusesCache.size());
-        } catch (Exception e) {
-            log.error("CACHE: ❌ Failed to load from local SQLite", e);
-        }
-
-        // 2. Perform Delta Sync and Register Firestore Listener
-        if (firestore != null) {
-            try {
-                String lastSync = localDatabaseService.getLastSyncTime("lineStatuses");
-                log.info("CACHE: 🔄 Delta sync [lineStatuses]. Last sync: {}", lastSync != null ? lastSync : "Never");
-
-                Query query = firestore.collection("lineStatuses");
-                if (lastSync != null && !lastSync.isEmpty()) {
-                    query = query.whereGreaterThan("lastUpdatedTime", TimeUtils.toEpochMs(lastSync));
-                }
-
-                ApiFuture<QuerySnapshot> future = query.get();
-                QuerySnapshot snapshot = future.get();
-                if (!snapshot.isEmpty()) {
-                    log.info("CACHE: 📥 Found {} new/modified documents in [lineStatuses]. Applying deltas...", snapshot.size());
-                    long newestMs = TimeUtils.toEpochMs(lastSync);
-                    for (QueryDocumentSnapshot doc : snapshot.getDocuments()) {
-                        LineStatusResponse status = doc.toObject(LineStatusResponse.class);
-                        if (status != null && status.getId() != null) {
-                            lineStatusesCache.put(status.getId(), status);
-                            localDatabaseService.upsertLineStatus(status);
-                            long ts = TimeUtils.toEpochMs(status.getLastUpdatedTime());
-                            if (ts > newestMs) newestMs = ts;
-                        }
-                    }
-                    if (newestMs > 0) {
-                        localDatabaseService.updateLastSyncTime("lineStatuses", String.valueOf(newestMs));
-                    }
-                } else {
-                    log.info("CACHE: 🏷️ Collection [lineStatuses] is already up to date.");
-                }
-            } catch (Exception e) {
-                log.warn("CACHE: ⚠️ Firestore delta sync failed, continuing with local data. Error: {}", e.getMessage());
-            }
-
-            try {
-                // Register real-time updates for changes after lastSyncTime
-                String lastSync = localDatabaseService.getLastSyncTime("lineStatuses");
-                final long initialMs = TimeUtils.toEpochMs(lastSync); // 0 if never synced
-                log.info("CACHE: ⚡ Setting up real-time listener for lineStatuses > {}", initialMs);
-
-                listenerRegistration = firestore.collection("lineStatuses")
-                        .whereGreaterThan("lastUpdatedTime", initialMs)
-                        .addSnapshotListener((snapshots, e) -> {
-                            if (e != null) {
-                                log.error("CACHE: ❌ Listen failed", e);
-                                return;
-                            }
-                            if (snapshots != null) {
-                                long newestMs = initialMs;
-                                boolean hasNewest = false;
-                                for (DocumentChange dc : snapshots.getDocumentChanges()) {
-                                    QueryDocumentSnapshot doc = dc.getDocument();
-                                    String id = doc.getId();
-                                    switch (dc.getType()) {
-                                        case ADDED:
-                                        case MODIFIED:
-                                            LineStatusResponse status = doc.toObject(LineStatusResponse.class);
-                                            if (status != null && status.getId() != null) {
-                                                LineStatusResponse existing = lineStatusesCache.get(status.getId());
-                                                long incomingMs = TimeUtils.toEpochMs(status.getLastUpdatedTime());
-                                                long existingMs = (existing != null) ? TimeUtils.toEpochMs(existing.getLastUpdatedTime()) : 0L;
-                                                if (existing == null || incomingMs == 0L || existingMs == 0L || incomingMs > existingMs) {
-
-                                                    log.info("CACHE: ⚡ Real-time update for line: {} ({} -> {})",
-                                                            id,
-                                                            existing != null ? existing.getLastUpdatedTime() : "none",
-                                                            status.getLastUpdatedTime());
-
-                                                    lineStatusesCache.put(id, status);
-                                                    localDatabaseService.upsertLineStatus(status);
-
-                                                    if (incomingMs > newestMs) {
-                                                        newestMs = incomingMs;
-                                                        hasNewest = true;
-                                                    }
-                                                }
-                                            }
-                                            break;
-                                        case REMOVED:
-                                            log.info("CACHE: ⚡ Real-time remove for line: {}", id);
-                                            lineStatusesCache.remove(id);
-                                            localDatabaseService.deleteLineStatus(id);
-                                            break;
-                                    }
-                                }
-                                if (hasNewest) {
-                                    localDatabaseService.updateLastSyncTime("lineStatuses", String.valueOf(newestMs));
-                                    log.info("CACHE: 📝 Updated [lineStatuses] lastSyncTime in SQLite metadata to {}", newestMs);
-                                }
-                            }
-                        });
-            } catch (Exception e) {
-                log.error("CACHE: ❌ Failed to register real-time Firestore listener", e);
-            }
-        } else {
-            log.warn("CACHE: ⚠️ Firestore is null. Skipping Firestore sync and listener.");
-        }
-    }
-
-    @PreDestroy
-    public void cleanup() {
-        if (listenerRegistration != null) {
-            log.info("CACHE: Unregistering Firestore lineStatuses listener...");
-            listenerRegistration.remove();
-        }
-    }
-
-    /**
-      * Poll Line Statuses from TfL API on the scheduled interval
-      */
     public List<LineStatusResponse> syncLineStatuses() {
         log.info("╔═══════════════════════════════════════════════════════════════════");
         log.info("║ 🚇 LINE STATUS SYNC STARTED");
@@ -184,6 +74,10 @@ public class LineService {
         List<LineStatusResponse> allStatuses = new ArrayList<>();
         List<LineStatusResponse> toSave = new ArrayList<>();
         Map<String, Object> fcmUpdates = new HashMap<>();
+        // Same changed statuses, keyed by BARE lineId for the WebSocket ingest.
+        // Kept separate from fcmUpdates because that map is keyed by FCM topic
+        // (LineStatus_<mode>_<id>) and the backend wants plain ids.
+        Map<String, Object> streamUpdates = new HashMap<>();
 
         // 1. Fetch existing statuses to compare against
         log.info("📥 Step 1: Loading existing line statuses from Cache...");
@@ -259,6 +153,7 @@ public class LineService {
                         log.info("   🔔 [{}] Status changed: {} | Topic: {}",
                                         trimmedMode, newStatus.getId(), topic);
                         fcmUpdates.put(topic, newStatus);
+                        streamUpdates.put(newStatus.getId(), newStatus);
                         toSave.add(newStatus);
                         changedCount++;
                     }
@@ -274,29 +169,63 @@ public class LineService {
             }
         }
 
-        // 3. Save to Firestore and update local cache/SQLite immediately to prevent polling race conditions
+        // 3. Update the in-memory cache — the only store there is.
+        //
+        // The Firestore saveAll and the SQLite upsert were both removed. The
+        // backend no longer reads either collection; it is fed directly by the
+        // POST in step 5, which is a single local HTTP call instead of a
+        // document write plus a replicated read on every instance.
         if (!toSave.isEmpty()) {
             for (LineStatusResponse status : toSave) {
                 lineStatusesCache.put(status.getId(), status);
-                try {
-                    localDatabaseService.upsertLineStatus(status);
-                } catch (Exception ex) {
-                    log.error("Failed to immediately save to local SQLite: {}", ex.getMessage());
-                }
             }
-            lineStatusRepository.saveAll(toSave);
-            log.info("✅ Step 3: Saved {} line statuses to Firestore and updated local cache/SQLite", toSave.size());
+            log.info("✅ Step 3: Cached {} changed line statuses", toSave.size());
         } else {
-            log.info("✅ Step 3: No line status changes to save");
+            log.info("✅ Step 3: No line status changes to cache");
         }
 
-        // 4. Publish to FCM
-        if (!fcmUpdates.isEmpty()) {
+        // 4. Publish to FCM — skipped on the first sync after boot.
+        //
+        // Nothing is persisted, so the baseline starts empty and EVERY line
+        // reads as changed on a cold start. Without this guard each restart or
+        // deploy would push ~30 "status changed" notifications to every
+        // subscribed user for changes that never happened.
+        if (!primed) {
+            log.info("✅ Step 4: First sync since boot — baseline primed with {} lines, FCM suppressed",
+                            allStatuses.size());
+        } else if (!fcmUpdates.isEmpty()) {
             log.info("🚀 Step 4: Publishing {} line status updates to FCM...", fcmUpdates.size());
             fcmService.publishAll(fcmUpdates);
             log.info("✅ Step 4: Queued {} FCM messages", fcmUpdates.size());
         } else {
             log.info("✅ Step 4: No line status changes to publish");
+        }
+
+        // 5. Publish to the WebSocket stream.
+        //
+        // This is the backend's ONLY live source of line status: its Firestore
+        // onSnapshot listener was removed to stop paying a document read per
+        // change. Without this dispatch it falls back to polling TfL once per
+        // mode per 10 minutes, which is far too stale to call a stream live.
+        //
+        // Non-blocking and failure-tolerant by contract — see
+        // LiveStreamPublisher — so it cannot delay or break this sync.
+        //
+        // Deliberately NOT suppressed on the priming run, unlike FCM: the
+        // backend's cache is empty at that point and needs current state, and a
+        // stream update only refreshes what a client already displays rather
+        // than interrupting the user.
+        if (!streamUpdates.isEmpty()) {
+            liveStreamPublisher.publishLineStatuses(streamUpdates);
+            log.info("✅ Step 5: Queued {} line status updates for the live stream", streamUpdates.size());
+        }
+
+        // Only once a baseline actually exists. If TfL was unreachable for every
+        // mode this run, allStatuses is empty and the cache is still cold —
+        // marking it primed would let the NEXT healthy sync treat all ~30 lines
+        // as new and fire the very FCM storm this flag exists to prevent.
+        if (!allStatuses.isEmpty()) {
+            primed = true;
         }
 
         log.info("╔═══════════════════════════════════════════════════════════════════");

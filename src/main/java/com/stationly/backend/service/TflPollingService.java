@@ -24,6 +24,7 @@ public class TflPollingService {
     private final TflApiClient tflApiClient;
     private final DataTransformationService transformationService;
     private final FcmService fcmService;
+    private final LiveStreamPublisher liveStreamPublisher;
     private final ChangeDetectionService changeDetectionService;
     private final com.stationly.backend.sync.FirestoreDatabaseSyncer firestoreDatabaseSyncer;
     private final LocalDatabaseService localDatabaseService;
@@ -141,6 +142,18 @@ public class TflPollingService {
             if (fcmCount > 0) {
                 log.info("⚡ [{}] Step 3: {}/{} stations changed. Publishing...", mode, fcmCount, groupedStations.size());
                 fcmService.publishAll(fcmData);
+
+                // Second consumer of the SAME change-detected map: the live stream
+                // for foreground app clients. Enqueue-only, so
+                // it can't delay this cycle. Wrapped anyway — the enclosing
+                // catch would swallow a throw here but also skip the summary
+                // logging below, making an unrelated failure look like a
+                // polling failure.
+                try {
+                    liveStreamPublisher.publishAll(fcmData);
+                } catch (Exception wsErr) {
+                    log.warn("⚠️ [{}] Live-stream enqueue failed (FCM unaffected): {}", mode, wsErr.getMessage());
+                }
                 log.info("✅ [{}] Step 3: Queued {} FCM messages", mode, fcmCount);
             } else {
                 log.info("✅ [{}] Step 3: No changes. Skipping FCM.", mode);

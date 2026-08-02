@@ -26,13 +26,7 @@ public class RepositoryConfig {
                 Station::getNaptanId);
     }
 
-    @Bean
-    public DataRepository<LineStatusResponse, String> lineStatusRepository(
-            @org.springframework.beans.factory.annotation.Autowired(required = false) Firestore firestore) {
-        return new GenericFirestoreRepository<>(
-                firestore,
-                "lineStatuses",
-                LineStatusResponse.class,
-                LineStatusResponse::getId);
-    }
+    // lineStatusRepository bean removed: line statuses are no longer persisted
+    // to Firestore. LineService keeps them in memory and pushes changes straight
+    // to the backend's /internal/line-status-updates endpoint.
 }
