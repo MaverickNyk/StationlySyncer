@@ -28,6 +28,7 @@ jobs:
         env:
           TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
           FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
+          LIVESTREAM_INGEST_SECRET: ${{ secrets.LIVESTREAM_INGEST_SECRET }}
         run: |
           cp src/main/resources/application.properties /tmp/application.properties
           
