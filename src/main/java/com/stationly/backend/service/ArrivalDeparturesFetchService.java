@@ -55,6 +55,19 @@ public class ArrivalDeparturesFetchService {
     private int maxCallsPerCycle;
 
     private static final Set<String> ARRIVAL_DEPARTURES_MODES = Set.of("elizabeth-line", "overground");
+
+    // TEMP: TfL lists some Elizabeth line stations twice. The mainline/hub copy
+    // has direction labels that are largely empty and self-contradictory; the
+    // low-level copy labels every train correctly. Read the good copy, publish
+    // under the subscribed id. hub -> { naptanId to read, name to keep }.
+    static final Map<String, String[]> ELIZABETH_SOURCE = Map.of(
+            "910GLIVST", new String[] { "910GLIVSTLL", "London Liverpool Street" },
+            "910GPADTON", new String[] { "910GPADTLL", "London Paddington" });
+
+    // The same pairs, keyed the other way for rewriting the bulk arrivals feed.
+    static final Map<String, String[]> ELIZABETH_REPUBLISH = Map.of(
+            "910GLIVSTLL", new String[] { "910GLIVST", "London Liverpool Street" },
+            "910GPADTLL", new String[] { "910GPADTON", "London Paddington" });
     private static final long STATION_CACHE_TTL_MS = 60 * 60 * 1000L; // station topology changes monthly
 
     private final Map<String, List<Station>> stationCache = new ConcurrentHashMap<>();
@@ -118,9 +131,11 @@ public class ArrivalDeparturesFetchService {
         for (Station s : planned) {
             Map<String, String> lines = linesByStation.get(s.getNaptanId());
             Map<String, CompletableFuture<List<ArrivalDeparture>>> futures = new HashMap<>();
+            String[] alias = "elizabeth-line".equals(modeLower) ? ELIZABETH_SOURCE.get(s.getNaptanId()) : null;
+            String fetchNaptan = alias != null ? alias[0] : s.getNaptanId();
             for (String lineId : lines.keySet()) {
                 futures.put(lineId, CompletableFuture.supplyAsync(
-                        () -> tflApi.getArrivalDepartures(s.getNaptanId(), lineId), executor));
+                        () -> tflApi.getArrivalDepartures(fetchNaptan, lineId), executor));
             }
             plans.put(s.getNaptanId(), new PlannedStation(modeLower, s.getCommonName(), futures, lines));
         }

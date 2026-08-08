@@ -205,7 +205,26 @@ public class TflPollingService {
 
     private List<ArrivalPrediction> filterArrivals(List<ArrivalPrediction> arrivals, java.util.Set<String> activeStationsFilter, String mode) {
         int fetchedCount = arrivals.size();
-        
+
+        // TEMP (pairs with ELIZABETH_SOURCE): drop the hub copy's rows and
+        // republish the low-level copy's under the subscribed id, so direction
+        // labels are learned from the good record. Must run BEFORE the
+        // subscribed filter — the low-level ids are not themselves subscribed.
+        if ("elizabeth-line".equals(mode)) {
+            List<ArrivalPrediction> remapped = new java.util.ArrayList<>(arrivals.size());
+            for (ArrivalPrediction a : arrivals) {
+                if (a.getNaptanId() == null) { remapped.add(a); continue; } // Map.of throws on null keys
+                if (ArrivalDeparturesFetchService.ELIZABETH_SOURCE.containsKey(a.getNaptanId())) continue;
+                String[] as = ArrivalDeparturesFetchService.ELIZABETH_REPUBLISH.get(a.getNaptanId());
+                if (as != null) {
+                    a.setNaptanId(as[0]);
+                    a.setStationName(as[1]);
+                }
+                remapped.add(a);
+            }
+            arrivals = remapped;
+        }
+
         if (activeStationsFilter == null) {
             log.info("✅ [{}] Step 1: Received {} arrivals", mode, arrivals.size());
             return arrivals;
