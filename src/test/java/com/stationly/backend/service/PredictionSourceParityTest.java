@@ -277,6 +277,67 @@ class PredictionSourceParityTest {
         assertEquals(1, readingRows, "TfL's transient duplicate emissions must collapse to one row");
     }
 
+    @Test
+    void busDestinationPrefersDestinationNameOverTowardsCorridor() {
+        ZonedDateTime now = ZonedDateTime.now();
+        // For buses, towards is the stop's general heading/corridor ("Kings Cross, Euston Or Oxford Street"),
+        // while destinationName is the actual bus terminus ("Canada Water").
+        ArrivalPrediction busArrival = arrival("490000036R", "Camden Town Station", "1", "1",
+                "bus", "R", "outbound", "490004733C", "Canada Water", "Kings Cross, Euston Or Oxford Street", now.plusMinutes(4));
+
+        Map<String, StationPredictions> result = newPipeline.transformToStationGroups(List.of(busArrival));
+        StationPredictions station = result.get("Station_490000036R");
+        assertNotNull(station);
+
+        List<String> names = allDisplayNames(station);
+        assertTrue(names.contains("Canada Water"), "Bus must use destinationName (Canada Water), not the corridor towards");
+        assertFalse(names.contains("Kings Cross, Euston Or Oxford Street"), "Bus must not use corridor towards heading");
+    }
+
+    @Test
+    void tubeDestinationPrefersTowardsOverVerboseDestinationName() {
+        ZonedDateTime now = ZonedDateTime.now();
+        // For Tube, towards is the clean platform indicator ("Edgware Road (Circle)"),
+        // while destinationName is the verbose internal name ("Edgware Road (Circle Line) Underground Station").
+        ArrivalPrediction tubeArrival = arrival("940GZZLUKSX", "King's Cross St. Pancras Underground Station", "circle", "Circle",
+                "tube", "Eastbound - Platform 2", "inbound", "940GZZLUERC", "Edgware Road (Circle Line) Underground Station", "Edgware Road (Circle)", now.plusMinutes(3));
+
+        Map<String, StationPredictions> result = newPipeline.transformToStationGroups(List.of(tubeArrival));
+        StationPredictions station = result.get("Station_940GZZLUKSX");
+        assertNotNull(station);
+
+        List<String> names = allDisplayNames(station);
+        assertTrue(names.contains("Edgware Road (Circle)"), "Tube must prefer towards indicator for platform parity");
+    }
+
+    @Test
+    void busFallsBackToTowardsWhenDestinationNameMissing() {
+        ZonedDateTime now = ZonedDateTime.now();
+        ArrivalPrediction busArrival = arrival("490000036R", "Camden Town Station", "1", "1",
+                "bus", "R", "outbound", "490004733C", null, "Canada Water", now.plusMinutes(4));
+
+        Map<String, StationPredictions> result = newPipeline.transformToStationGroups(List.of(busArrival));
+        StationPredictions station = result.get("Station_490000036R");
+        assertNotNull(station);
+
+        List<String> names = allDisplayNames(station);
+        assertTrue(names.contains("Canada Water"), "Bus must fallback to towards if destinationName is missing");
+    }
+
+    @Test
+    void tubeFallsBackToDestinationNameWhenTowardsNullOrLiteralNull() {
+        ZonedDateTime now = ZonedDateTime.now();
+        ArrivalPrediction tubeArrival = arrival("940GZZLUOXC", "Oxford Circus Underground Station", "victoria", "Victoria",
+                "tube", "Northbound - Platform 3", "outbound", "940GZZLUWWL", "Walthamstow Central Underground Station", "null", now.plusMinutes(2));
+
+        Map<String, StationPredictions> result = newPipeline.transformToStationGroups(List.of(tubeArrival));
+        StationPredictions station = result.get("Station_940GZZLUOXC");
+        assertNotNull(station);
+
+        List<String> names = allDisplayNames(station);
+        assertTrue(names.contains("Walthamstow Central"), "Tube must fallback to cleanDestinationName when towards is literal 'null'");
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private StationPredictions transformBoardStation(String naptanId, String lineId,
@@ -439,10 +500,17 @@ class PredictionSourceParityTest {
         }
 
         private PredictionItem toPredictionItem(ArrivalPrediction arrival) {
+            boolean isBus = "bus".equalsIgnoreCase(arrival.getModeName());
             String towards = arrival.getTowards() != null ? arrival.getTowards().trim() : "";
-            String rawName = (!towards.isEmpty() && !towards.equalsIgnoreCase("null"))
-                    ? towards
-                    : arrival.getDestinationName();
+            boolean hasValidTowards = !towards.isEmpty() && !towards.equalsIgnoreCase("null");
+
+            String rawName;
+            if (isBus) {
+                String dest = arrival.getDestinationName() != null ? arrival.getDestinationName().trim() : "";
+                rawName = !dest.isEmpty() ? dest : (hasValidTowards ? towards : "");
+            } else {
+                rawName = hasValidTowards ? towards : arrival.getDestinationName();
+            }
 
             if (rawName != null) {
                 rawName = rawName.replace(" Underground Station", "")

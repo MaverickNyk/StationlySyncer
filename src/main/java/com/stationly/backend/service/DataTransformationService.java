@@ -198,12 +198,21 @@ public class DataTransformationService {
     }
 
     public PredictionItem toPredictionItem(ArrivalPrediction arrival) {
-        // iBus sends the literal string "null" in `towards` for buses while the
-        // real destination sits in destinationName — treat it as absent.
+        boolean isBus = "bus".equalsIgnoreCase(arrival.getModeName());
         String towards = arrival.getTowards() != null ? arrival.getTowards().trim() : "";
-        String rawName = (!towards.isEmpty() && !towards.equalsIgnoreCase("null"))
-                ? towards
-                : arrival.getDestinationName();
+        boolean hasValidTowards = !towards.isEmpty() && !towards.equalsIgnoreCase("null");
+
+        String rawName;
+        if (isBus) {
+            // For buses: destinationName is the actual bus terminus.
+            // towards is the stop's general compass/corridor heading (e.g. "towards Victoria").
+            String dest = arrival.getDestinationName() != null ? arrival.getDestinationName().trim() : "";
+            rawName = !dest.isEmpty() ? dest : (hasValidTowards ? towards : "");
+        } else {
+            // For Tube / DLR / Tram: towards is the concise passenger board label.
+            // iBus or train feeds sending literal "null" fall back to destinationName.
+            rawName = hasValidTowards ? towards : arrival.getDestinationName();
+        }
 
         rawName = cleanDestinationName(rawName);
 
