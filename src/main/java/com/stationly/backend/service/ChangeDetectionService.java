@@ -20,6 +20,8 @@ public class ChangeDetectionService {
 
     // Cache to store the previous predictions for change detection
     private final Map<String, Map<String, LineData>> stationStateCache = new ConcurrentHashMap<>();
+    // Remembers the last-known station name so wipes NEVER send "name": null
+    private final Map<String, String> stationNameCache = new ConcurrentHashMap<>();
     // Cache to store the last time (cycle) we successfully pushed an update for a station
     private final Map<String, Long> stationHeartbeatCache = new ConcurrentHashMap<>();
     private final AtomicLong cycleCounter = new AtomicLong(0);
@@ -49,6 +51,11 @@ public class ChangeDetectionService {
             boolean contentChanged = (lastLines == null || !lastLines.equals(currentLines));
             boolean heartbeatTriggered = (currentCycle - lastHeartbeatCycle >= HEARTBEAT_THRESHOLD_CYCLES);
 
+            // Remember the real station name so wipe frames never have null name
+            if (predictions.getStationName() != null && !predictions.getStationName().isBlank()) {
+                stationNameCache.put(stationId, predictions.getStationName());
+            }
+
             if (contentChanged || heartbeatTriggered) {
                 changedData.put(stationId, predictions);
                 // Update caches
@@ -77,23 +84,55 @@ public class ChangeDetectionService {
 
             for (String stationId : potentiallyDisappeared) {
                 log.info("🧹 [{}] Station disappeared from feed, clearing: {}", mode, stationId);
+                String cleanId = stationId.replace("Station_", "");
+                String stationName = stationNameCache.getOrDefault(stationId, cleanId);
+
                 // Send empty update to clear client state
                 fcmData.put(stationId, StationPredictions.builder()
-                        .stationId(stationId.replace("Station_", ""))
+                        .stationId(cleanId)
+                        .stationName(stationName)
                         .lines(new HashMap<>())
                         .lastUpdatedTime(LocalDateTime.now().format(DateTimeFormatter.ISO_DATE_TIME))
                         .build());
                 
                 stationStateCache.remove(stationId);
                 stationHeartbeatCache.remove(stationId);
+                stationNameCache.remove(stationId);
             }
         }
     }
 
     private boolean isStationRelevantToMode(String stationId, String mode) {
-        if ("bus".equalsIgnoreCase(mode)) return stationId.contains("490");
-        if ("tube".equalsIgnoreCase(mode)) return stationId.contains("940");
-        if ("dlr".equalsIgnoreCase(mode)) return stationId.contains("940GZZD");
+        String id = stationId.startsWith("Station_") ? stationId.substring(8) : stationId;
+
+        // 1. Underground (Tube): All 272 stations
+        if ("tube".equalsIgnoreCase(mode)) {
+            return id.startsWith("940GZZLU")
+                    || "940GZZBPSUST".equals(id)
+                    || "940GZZNEUGST".equals(id);
+        }
+
+        // 2. DLR: All 45 stations
+        if ("dlr".equalsIgnoreCase(mode)) {
+            return id.startsWith("940GZZDL");
+        }
+
+        // 3. Buses: All 19,737 London bus stops
+        if ("bus".equalsIgnoreCase(mode)) {
+            return id.startsWith("490")
+                    || id.startsWith("4000")
+                    || id.startsWith("1500")
+                    || id.startsWith("2400")
+                    || id.startsWith("2100")
+                    || id.startsWith("1590")
+                    || id.startsWith("0370")
+                    || id.startsWith("0400");
+        }
+
+        // Overground & Elizabeth Line: Deliberately skipped.
+        // These rail modes use ArrivalDepartures timetable boards (real timetables
+        // at termini even during zero live countdown arrivals). Wiping them on countdown
+        // absence would destroy quiet-hour terminus boards.
         return false;
     }
 }
