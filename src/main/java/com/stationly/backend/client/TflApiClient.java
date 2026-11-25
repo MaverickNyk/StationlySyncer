@@ -136,4 +136,19 @@ public class TflApiClient implements TflApi {
                                 .timeout(java.time.Duration.ofSeconds(apiTimeout))
                                 .block();
         }
+
+        public List<Map<String, Object>> getStopNotices(String modes) {
+                rateLimiter.acquire();
+                return webClient.get()
+                                .uri(uriBuilder -> uriBuilder
+                                                .path("/StopPoint/Mode/{modes}/Disruption")
+                                                .queryParam("app_key", appKey)
+                                                .build(modes))
+                                .retrieve()
+                                .bodyToMono(
+                                                new org.springframework.core.ParameterizedTypeReference<List<Map<String, Object>>>() {
+                                                })
+                                .timeout(java.time.Duration.ofSeconds(apiTimeout))
+                                .block();
+        }
 }

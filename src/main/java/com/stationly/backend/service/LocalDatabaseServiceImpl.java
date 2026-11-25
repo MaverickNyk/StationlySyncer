@@ -119,6 +119,7 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
             stmt.execute(indexStopType);
             stmt.execute(createSubscribedStations);
             stmt.execute(createRouteDirections);
+            stmt.execute("CREATE TABLE IF NOT EXISTS station_notice_state (name TEXT PRIMARY KEY, json TEXT)");
             log.info("SQLITE: ✅ Database tables verified/created successfully.");
         }
     }
@@ -541,5 +542,48 @@ public class LocalDatabaseServiceImpl implements LocalDatabaseService {
             log.error("SQLITE: ❌ Failed to read route directions watermark", e);
         }
         return 0L;
+    }
+
+    @Override
+    public String getNoticeState(String name) {
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement("SELECT json FROM station_notice_state WHERE name = ?")) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        } catch (SQLException e) {
+            log.error("SQLITE: ❌ Failed to read notice state {}", name, e);
+            return null;
+        }
+    }
+
+    @Override
+    public void saveNoticeState(String name, String json) {
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement("INSERT OR REPLACE INTO station_notice_state (name, json) VALUES (?, ?)")) {
+            ps.setString(1, name);
+            ps.setString(2, json);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            log.error("SQLITE: ❌ Failed to save notice state {}", name, e);
+        }
+    }
+
+    @Override
+    public Integer countLinesAt(String naptanId) {
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement("SELECT modes_json FROM stations WHERE naptanId = ?")) {
+            ps.setString(1, naptanId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next() || rs.getString(1) == null) return null;
+                Set<String> lines = new HashSet<>();
+                objectMapper.readTree(rs.getString(1)).forEach(mode -> mode.path("lines").fieldNames().forEachRemaining(lines::add));
+                return lines.size();
+            }
+        } catch (Exception e) {
+            log.warn("SQLITE: ⚠️ Lines at {} not known: {}", naptanId, e.getMessage());
+            return null;
+        }
     }
 }

@@ -34,4 +34,10 @@ public interface LocalDatabaseService {
     void upsertAllRouteDirections(java.util.List<Object[]> rows);
     java.util.Map<String, String> getAllRouteDirections();
     long getRouteDirectionsWatermark();
+
+    /** Station notices' state (what the last poll meant, what phones were told), as JSON by name. */
+    String getNoticeState(String name);
+    void saveNoticeState(String name, String json);
+    /** How many lines call at a stop; null when it is not known. */
+    Integer countLinesAt(String naptanId);
 }

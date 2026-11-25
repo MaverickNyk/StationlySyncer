@@ -145,6 +145,8 @@ public class FcmService implements NotificationService {
             return;
 
         List<Message> batch = new ArrayList<>(MESSAGES_PER_TICK);
+        // What each message was queued as, so that a refused station notice can be named.
+        List<String> keys = new ArrayList<>(MESSAGES_PER_TICK);
 
         // ConcurrentHashMap iterator is weakly consistent - safe for concurrent mods
         Iterator<String> iterator = pendingMessages.keySet().iterator();
@@ -154,6 +156,7 @@ public class FcmService implements NotificationService {
             Message msg = pendingMessages.remove(topic); // Atomic remove
             if (msg != null) {
                 batch.add(msg);
+                keys.add(topic);
             }
         }
 
@@ -167,6 +170,10 @@ public class FcmService implements NotificationService {
             future.addListener(() -> {
                 try {
                     BatchResponse response = future.get();
+                    List<SendResponse> each = response.getResponses();
+                    for (int i = 0; i < each.size() && i < keys.size(); i++) {
+                        if (!each.get(i).isSuccessful()) noteFailed(keys.get(i));
+                    }
                     if (response.getFailureCount() > 0) {
                         log.warn("⚠️ [FCM] Batch completed with {} failures out of {}", response.getFailureCount(),
                                 batch.size());
@@ -174,11 +181,47 @@ public class FcmService implements NotificationService {
                         log.info("✅ [FCM] Batch sent successfully: {} messages", batch.size());
                     }
                 } catch (Exception e) {
+                    keys.forEach(this::noteFailed);
                     log.error("❌ [FCM] Async Send error for batch of {}: {}", batch.size(), e.getMessage());
                 }
                 log.debug("📊 [FCM] Queue status: {} items remaining", pendingMessages.size());
             }, callbackExecutor); // Use a shared executor for callbacks
         }
+    }
+
+    /** A key no topic has: a notice and departures for one stop must not replace each other in the queue. */
+    private static final String STATUS_KEY = "station_status ";
+    private final java.util.Set<String> failedStatuses = ConcurrentHashMap.newKeySet();
+
+    private void noteFailed(String key) {
+        if (key.startsWith(STATUS_KEY)) failedStatuses.add(key.substring(STATUS_KEY.length()));
+    }
+
+    @Override
+    public java.util.Set<String> failedStationStatuses() {
+        java.util.Set<String> out = new java.util.HashSet<>(failedStatuses);
+        failedStatuses.removeAll(out);
+        return out;
+    }
+
+    @Override
+    public boolean publishStationStatus(String stationId, String json) {
+        if (!fcmEnabled) return false;
+        pendingMessages.put(STATUS_KEY + stationId, stationStatusMessage(stationId, json));
+        return true;
+    }
+
+    /** No collapse key: FCM keeps four per phone. The notice's own `at` sorts out the order. */
+    static Message stationStatusMessage(String stationId, String json) {
+        return Message.builder()
+                .setTopic("Station_" + stationId)
+                .putData("type", "station_status")
+                .putData("station_status", json)
+                .setAndroidConfig(AndroidConfig.builder()
+                        .setPriority(AndroidConfig.Priority.HIGH)
+                        .setTtl(com.stationly.backend.notices.StationNotice.EXPIRE_MS)
+                        .build())
+                .build();
     }
 
     /**
