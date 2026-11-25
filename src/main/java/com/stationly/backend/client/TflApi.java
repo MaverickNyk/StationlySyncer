@@ -22,4 +22,10 @@ public interface TflApi {
     Map<String, Object> getRouteSequence(String lineId, String direction);
 
     List<Map<String, Object>> getLineStatuses(String modes);
+
+    /**
+     * Every notice on a stop of these modes (comma-separated), closures among
+     * them. Throws when TfL does not answer: an empty list must mean "no notices".
+     */
+    List<Map<String, Object>> getStopNotices(String modes);
 }
