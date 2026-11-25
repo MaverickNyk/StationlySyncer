@@ -128,6 +128,16 @@ class PredictionSourceParityTest {
 
     // ---------------------------------------------------------------- tests
 
+    /** Southfields, 2026-11-25: Android 2.0 test builds lost the board's whole update on a null id. */
+    @Test
+    void aTrainWithNoDestinationHasABlankIdNotNull() {
+        ArrivalPrediction a = arrival("940GZZLUSFS", "Southfields Underground Station", "district", "District", "tube",
+                "Eastbound - Platform 1", null, null, null, "Check Front of Train", ZonedDateTime.now().plusMinutes(16));
+        PredictionItem item = newPipeline.toPredictionItem(a);
+        assertEquals("", item.getDestinationNaptanId());
+        assertEquals("Check Front of Train", item.getDisplayName());
+    }
+
     @Test
     void countdownOnlyOutputIsByteIdenticalToLegacyTransform() throws Exception {
         ZonedDateTime now = ZonedDateTime.now();
