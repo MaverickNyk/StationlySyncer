@@ -201,4 +201,10 @@ class StationStatusRulesTest {
             assertEquals("unclear", StationStatusRules.statuses(List.of(a, b), Instant.parse(NOON).toEpochMilli()).get("id").kind(), other);
         }
     }
+
+    @Test
+    void aHugeNoticeIsUnclearAndDoesNotOverflow() {
+        assertEquals("unclear", kind("bus", "Bus Stop Closed " + "please use next ".repeat(5000)));
+        assertEquals("unclear", kind("tube", "Arsenal: Closed - " + "This station is closed. ".repeat(5000)));
+    }
 }

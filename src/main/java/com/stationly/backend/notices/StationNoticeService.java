@@ -175,7 +175,7 @@ public class StationNoticeService {
                 poll(g, stations, now.toEpochMilli());
             }
             tell(stations, now.toEpochMilli());
-        } catch (Exception e) {
+        } catch (Exception | StackOverflowError e) {
             log.error("❌ [NOTICES] {}", e.getMessage(), e);
         }
     }

@@ -42,6 +42,7 @@ public final class StationStatusRules {
     /** A closure this close is worth saying on the board now. */
     private static final long CLOSING_SOON_MS = 12 * HOUR;
     private static final ZoneId LONDON = ZoneId.of("Europe/London");
+    private static final int LONGEST = 2000;
 
     private static Pattern re(String p) {
         return Pattern.compile(p, Pattern.CASE_INSENSITIVE);
@@ -258,6 +259,8 @@ public final class StationStatusRules {
         boolean ours = "Closure".equals(n.type()) || "Exit Only".equals(n.type()) || ("Part Closure".equals(n.type()) && realTime);
         if (!ours) return null;
         String text = tidy(n.description());
+        // The longest real one is under 1000. A pattern can overflow the stack on a huge one.
+        if (text.length() > LONGEST) return unclear("too long");
         return "bus".equals(n.mode()) ? readBus(text, from, to) : readRail(text, n.commonName() == null ? "" : n.commonName(), from, to);
     }
 
