@@ -170,6 +170,28 @@ public class LiveStreamPublisher {
         }
     }
 
+    /**
+     * Post what is now known about station closures: everything, every poll, so a
+     * restarted backend is right within one. Unlike the queues above this BLOCKS, so
+     * it is only for a caller with its own thread (StationNoticeService).
+     * Never throws and never retries: the next poll replaces it.
+     */
+    public void publishStationStatuses(Map<String, Object> body) {
+        if (!active) return;
+        try {
+            webClient.post()
+                    .uri("/internal/station-statuses")
+                    .bodyValue(body)
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .timeout(Duration.ofSeconds(10))
+                    .block();
+        } catch (Exception e) {
+            // 404 until the backend that has this endpoint is deployed.
+            log.warn("⚠️ [NOTICES] {} not delivered: {}", body.get("group"), e.getMessage());
+        }
+    }
+
     private void pacerLoop() {
         while (running) {
             long start = System.currentTimeMillis();
