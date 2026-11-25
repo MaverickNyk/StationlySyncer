@@ -170,3 +170,12 @@ pushes to `Station_<id>`, and posts everything it holds to `POST /internal/stati
 for the backend to serve: `stationly-backend/docs/STATION_STATUS.md`. A failed TfL call
 changes nothing. Off: `STATION_NOTICES_ENABLED=false`. Against a backend without the endpoint it logs a 404 per
 poll; phones are told all the same.
+
+---
+
+## A train with no destination (2026-11-25)
+
+TfL names no destination for some trains ("Check Front of Train"). Their `destId` is sent
+BLANK, never null: Android 2.0 test builds lose the board's whole update on a null. Not
+"unknown" either: an app hides an id it does not know from a board filtered by destination,
+and shows a blank one. Details: StationlyUI `docs/android-v2/SESSIONS.md`, S025.

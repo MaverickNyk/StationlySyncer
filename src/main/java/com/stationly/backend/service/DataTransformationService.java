@@ -217,7 +217,10 @@ public class DataTransformationService {
         rawName = cleanDestinationName(rawName);
 
         return PredictionItem.builder()
-                .destinationNaptanId(arrival.getDestinationNaptanId())
+                // Blank, not null ("Check Front of Train" has none): Android 2.0 test builds
+                // lose a board's whole update on a null. Not "unknown", which a board
+                // filtered by destination would hide; blank is shown, as null was.
+                .destinationNaptanId(arrival.getDestinationNaptanId() == null ? "" : arrival.getDestinationNaptanId())
                 .platformName(getPresentablePlatform(arrival.getModeName(), arrival.getPlatformName()))
                 .expectedArrival(arrival.getExpectedArrival() != null
                         ? arrival.getExpectedArrival().format(DateTimeFormatter.ISO_INSTANT)
