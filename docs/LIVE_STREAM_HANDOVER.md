@@ -159,3 +159,14 @@ Should show a snapshot immediately, then live updates roughly every 30s.
 - **Line status is NOT streamed.** Investigated and deferred: it has two producers (this Syncer *and* the backend's own on-demand TfL refresh), polls every 10min, and already reaches the backend via Firestore `onSnapshot`. See the backend handover for the full reasoning.
 - **`LiveStreamPublisher` has no tests.** Verified manually end-to-end with real TfL data.
 - **Nothing is committed.**
+
+---
+
+## Station closures (2026-11-25)
+
+`notices/` asks TfL for its stop notices (rail every minute, buses every five, less
+overnight, not at all while nobody tracks such a stop), decides which stations are closed,
+pushes to `Station_<id>`, and posts everything it holds to `POST /internal/station-statuses`
+for the backend to serve: `stationly-backend/docs/STATION_STATUS.md`. A failed TfL call
+changes nothing. Off: `STATION_NOTICES_ENABLED=false`. Against a backend without the endpoint it logs a 404 per
+poll; phones are told all the same.

@@ -169,7 +169,8 @@ public class TflPollingService {
         }
     }
 
-    private java.util.Set<String> getActiveSubscribedStations() {
+    /** Null means every station (strategy "all"). */
+    public java.util.Set<String> getActiveSubscribedStations() {
         if (!isSubscribedStrategy) {
             return null;
         }
